@@ -1,6 +1,7 @@
 colorthief==0.2.1
 keyboard==0.13.5
-numpy==2.3.3
+numpy==2.2.6
 Pillow==11.3.0
 pyttsx3==2.99
+
 scipy==1.16.2
