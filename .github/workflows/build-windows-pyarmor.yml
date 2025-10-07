@@ -1,4 +1,4 @@
-name: Build GalaxyTimer (PyInstaller with voice support)
+name: Build GalaxyTimer (PyInstaller with comprehensive dependency support)
 
 on:
   push:
@@ -22,28 +22,42 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Upgrade pip & install build tools
+      - name: Upgrade pip & install dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          # Ensure all dependencies are installed
           pip install -r requirements.txt
 
-      - name: Ensure pyttsx3 Hidden Imports
+          # List installed packages for confirmation
+          echo "Installed Packages:"
+          pip list
+
+      - name: Gather hidden imports for PyInstaller
         shell: pwsh
         run: |
-          # List of potential modules that could be used by pyttsx3 based on OS drivers
-          $hiddenImports = @("pyttsx3.drivers", "pyttsx3.drivers.sapi5", "speech_recognition", "gi")
+          # Hidden imports based on typical causes of pyttsx3 and others
+          $hiddenImports = @("pyttsx3.drivers", "pyttsx3.drivers.sapi5", "gi._gi", "gi.repository")
 
-          foreach ($pkg in $hiddenImports) {
-            pyinstaller --clean --noconfirm --windowed --onefile --hidden-import=$pkg --add-data "build_src\pyscript\logic;logic" --add-data "build_src\pyscript\core;core" --add-data "build_src\pyscript\widgets;widgets" --icon=".\\resources\\icon\\icon.ico" $env:ENTRY
+          $importArgs = $hiddenImports | ForEach-Object { '--hidden-import=' + $_ }
+          echo "Hidden import args: $($importArgs -join ' ')"
+
+      - name: Build with PyInstaller
+        shell: pwsh
+        run: |
+          $iconPath = ".\resources\icon\icon.ico"
+          $hiddenImportArgs = "--hidden-import pyttsx3.drivers --hidden-import pyttsx3.drivers.sapi5 --hidden-import gi._gi --hidden-import gi.repository"
+          if (-not (Test-Path $iconPath)) {
+            Write-Host "Icon not found, continuing without setting an icon."
+            pyinstaller --noconfirm --windowed --onefile $hiddenImportArgs --add-data "build_src\pyscript\logic;logic" --add-data "build_src\pyscript\core;core" --add-data "build_src\pyscript\widgets;widgets" $env:ENTRY
+          } else {
+            pyinstaller --noconfirm --windowed --onefile $hiddenImportArgs --icon=$iconPath --add-data "build_src\pyscript\logic;logic" --add-data "build_src\pyscript\core;core" --add-data "build_src\pyscript\widgets;widgets" $env:ENTRY
           }
 
       - name: Rename and publish exe
         shell: pwsh
         run: |
           $exePath = Join-Path -Path (Get-Location) -ChildPath "dist\galaxytimer.exe"
-          if (Test-Path $exePath) {
+          if (Test-Path $exePath)) {
             Move-Item -Force $exePath .\GalaxyTimer.exe
             Write-Host "Moved to GalaxyTimer.exe"
           } else {
