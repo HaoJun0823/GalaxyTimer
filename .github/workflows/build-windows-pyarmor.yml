@@ -10,8 +10,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     env:
-      PYTHON_VERSION: '3.10'
-      ENTRY: pyscript/galaxytimer.py
+      PYTHON_VERSION: '3.10'  # 维持目前环境为 3.10
 
     steps:
       - name: Checkout repo
@@ -22,15 +21,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Verify and Install Dependencies
+      - name: Upgrade pip & install dependencies
         shell: pwsh
         run: |
-          if (-Not (Test-Path "requirements.txt")) {
-            Write-Error "requirements.txt not found in the repository root."
-            exit 1
-          }
           python -m pip install --upgrade pip setuptools wheel
-          pip install -r requirements.txt
+          pip install -r requirements.txt || exit 1  # 如果必要，改用相应版本
 
       - name: List Installed Packages
         shell: pwsh
