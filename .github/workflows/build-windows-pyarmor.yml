@@ -1,4 +1,4 @@
-name: Build GalaxyTimer (PyInstaller with PyArmor and dependencies)
+name: Build GalaxyTimer (PyInstaller with PyArmor)
 
 on:
   push:
@@ -45,7 +45,6 @@ jobs:
         run: |
           Remove-Item -Force -ErrorAction SilentlyContinue .\GalaxyTimer.exe
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\build_src, .\obf, .\dist, .\build
-
           New-Item -ItemType Directory -Force -Path build_src | Out-Null
           Copy-Item -Recurse -Force -Path .\pyscript -Destination .\build_src\pyscript
           $srcFolders = @("logic", "core", "widgets")
@@ -56,7 +55,7 @@ jobs:
               Write-Host "Warning: Folder pyscript\$folder not found."
             }
           }
-
+      
       - name: Inject build salt (optional)
         shell: pwsh
         run: |
@@ -67,20 +66,24 @@ jobs:
           if ($salt.Length -gt 16) { $salt = $salt.Substring(0,16) }
           Write-Host "Generated SALT: $salt"
           Add-Content -Path $env:GITHUB_ENV -Value "BUILD_SALT=$salt"
-
           $entryPath = Join-Path -Path (Get-Location) -ChildPath $env:ENTRY
           (Get-Content $entryPath -Raw) -replace "__BUILD_SALT__", $salt | Set-Content $entryPath -Encoding UTF8
 
       - name: Obfuscate sources with PyArmor
         shell: pwsh
         run: |
-          pyarmor pack --output .\dist --clean -x " --onefile --noconfirm --windowed --icon=.\\resources\\icon\\icon.ico" $env:ENTRY
+          pyarmor pack -x " --onefile --noconfirm --windowed --icon=.\\resources\\icon\\icon.ico" -O dist $env:ENTRY
+
+      - name: Check dist directory contents
+        shell: pwsh
+        run: |
+          Write-Host "Contents of dist directory:"
+          Get-ChildItem -Path .\dist
 
       - name: Rename and publish exe
         shell: pwsh
         run: |
-          # 根据新的打包输出路径和文件名查找
-          $exePath = Join-Path -Path (Get-Location) -ChildPath "dist\GalaxyTimer.exe"
+          $exePath = Join-Path -Path (Get-Location) -ChildPath "dist\galaxytimer.exe"
           if (Test-Path $exePath) {
             Move-Item -Force $exePath .\GalaxyTimer.exe
             Write-Host "Moved to GalaxyTimer.exe"
