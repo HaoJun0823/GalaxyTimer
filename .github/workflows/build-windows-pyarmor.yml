@@ -1,4 +1,4 @@
-name: Build GalaxyTimer (PyInstaller)
+name: Build GalaxyTimer (PyInstaller with PyArmor and Python 3.11)
 
 on:
   push:
@@ -10,7 +10,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     env:
-      PYTHON_VERSION: '3.11'  # 更新至 3.11
+      PYTHON_VERSION: '3.11'  # 更新至 Python 3.11
+      ENTRY: pyscript/galaxytimer.py  # 确保路径正确
 
     steps:
       - name: Checkout repo
@@ -25,7 +26,11 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install -r requirements.txt || exit 1  # 确保正确安装依赖
+          if (-Not (Test-Path "requirements.txt")) {
+            Write-Error "requirements.txt not found in the repository root."
+            exit 1
+          }
+          pip install -r requirements.txt
 
       - name: List Installed Packages
         shell: pwsh
@@ -33,10 +38,48 @@ jobs:
           echo "Installed Packages:"
           pip list
 
+      - name: Prepare build_src (copy sources + resources)
+        shell: pwsh
+        run: |
+          Remove-Item -Force -ErrorAction SilentlyContinue .\GalaxyTimer.exe
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\build_src, .\obf, .\dist, .\build
+
+          New-Item -ItemType Directory -Force -Path build_src | Out-Null
+          Copy-Item -Recurse -Force -Path .\pyscript -Destination .\build_src\pyscript
+
+          $srcFolders = @("logic", "core", "widgets")
+          foreach ($folder in $srcFolders) {
+            if (Test-Path ".\pyscript\$folder") {
+              Copy-Item -Recurse -Force -Path ".\pyscript\$folder" -Destination ".\build_src\pyscript\$folder"
+            } else {
+              Write-Host "Warning: Folder pyscript\$folder not found."
+            }
+          }
+
+      - name: Inject build salt (optional)
+        shell: pwsh
+        run: |
+          $bytes = New-Object byte[] 12
+          $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+          $rng.GetBytes($bytes)
+          $salt = [System.Convert]::ToBase64String($bytes) -replace '/', '_' -replace '\+', '-' -replace '=', ''
+          if ($salt.Length -gt 16) { $salt = $salt.Substring(0,16) }
+          Write-Host "Generated SALT: $salt"
+          Add-Content -Path $env:GITHUB_ENV -Value "BUILD_SALT=$salt"
+
+          $entryPath = Join-Path -Path (Get-Location) -ChildPath $env:ENTRY
+          (Get-Content $entryPath -Raw) -replace "__BUILD_SALT__", $salt | Set-Content $entryPath -Encoding UTF8
+
       - name: Build with PyInstaller
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --windowed --onefile --hidden-import=pyttsx3 --hidden-import=PySide6 --hidden-import=keyboard --add-data "build_src\pyscript\logic;logic" --add-data "build_src\pyscript\core;core" --add-data "build_src\pyscript\widgets;widgets" --icon=".\\resources\\icon\\icon.ico" $env:ENTRY
+          $iconPath = ".\resources\icon\icon.ico"
+          if (-not (Test-Path $iconPath)) {
+            Write-Host "Icon not found, continuing without setting an icon."
+            python -m pyinstaller --noconfirm --windowed --onefile --hidden-import=pyttsx3 --hidden-import=PySide6 --hidden-import=keyboard --add-data "build_src\pyscript\logic;logic" --add-data "build_src\pyscript\core;core" --add-data "build_src\pyscript\widgets;widgets" $env:ENTRY
+          } else {
+            python -m pyinstaller --noconfirm --windowed --onefile --hidden-import=pyttsx3 --hidden-import=PySide6 --hidden-import=keyboard --icon=$iconPath --add-data "build_src\pyscript\logic;logic" --add-data "build_src\pyscript\core;core" --add-data "build_src\pyscript\widgets;widgets" $env:ENTRY
+          }
 
       - name: Rename and publish exe
         shell: pwsh
