@@ -10,7 +10,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     env:
-      PYTHON_VERSION: '3.10'  # 保留原有 Python 版本
+      PYTHON_VERSION: '3.10'  
       ENTRY: pyscript/galaxytimer.py
 
     steps:
@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Upgrade pip & install build tools and dependencies
+      - name: Install dependencies and tools
         shell: pwsh
         env:
           PIP_DISABLE_PIP_VERSION_CHECK: "1"
