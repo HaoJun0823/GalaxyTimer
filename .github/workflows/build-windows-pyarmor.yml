@@ -10,12 +10,14 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     env:
-      PYTHON_VERSION: '3.11'
+      PYTHON_VERSION: '3.11'  # 或保持3.10，按需选择
       ENTRY: pyscript/galaxytimer.py
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -26,9 +28,8 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install pyinstaller pyarmor==8.1.0
-          # 安装requirements.txt中所有需依赖的包
-          if (-Not (Test-Path "requirements.txt")) { 
+          python -m pip install pyinstaller pyarmor==7.6.0  # 确保使用指定版本的 PyArmor
+          if (-Not (Test-Path "requirements.txt")) {
             Write-Error "requirements.txt not found in the repository root."
             exit 1
           }
@@ -40,11 +41,10 @@ jobs:
           echo "Installed Packages:"
           pip list
 
-      - name: Prepare Build Source and Resources
+      - name: Prepare build_src (copy sources + resources)
         shell: pwsh
         run: |
-          Remove-Item -Force -ErrorAction SilentlyContinue .\GalaxyTimer.exe
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\build_src, .\obf, .\dist, .\build
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\GalaxyTimer.exe, .\build_src, .\obf, .\dist, .\build
           New-Item -ItemType Directory -Force -Path build_src | Out-Null
           Copy-Item -Recurse -Force -Path .\pyscript -Destination .\build_src\pyscript
           $srcFolders = @("logic", "core", "widgets")
@@ -55,60 +55,65 @@ jobs:
               Write-Host "Warning: Folder pyscript\$folder not found."
             }
           }
-      
-      - name: Inject Build Salt
+
+      - name: Inject build salt (optional)
         shell: pwsh
         run: |
           $bytes = New-Object byte[] 12
           $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
           $rng.GetBytes($bytes)
-          $salt = [System.Convert]::ToBase64String($bytes) -replace '/', '_' -replace '\+', '-' -replace '=', ''
+          $salt = [System.Convert]::ToBase64String($bytes) -replace '/','_' -replace '\+','-' -replace '=',''
           if ($salt.Length -gt 16) { $salt = $salt.Substring(0,16) }
           Write-Host "Generated SALT: $salt"
           Add-Content -Path $env:GITHUB_ENV -Value "BUILD_SALT=$salt"
+
           $entryPath = Join-Path -Path (Get-Location) -ChildPath $env:ENTRY
           (Get-Content $entryPath -Raw) -replace "__BUILD_SALT__", $salt | Set-Content $entryPath -Encoding UTF8
 
-      - name: Obfuscate with PyArmor
+      - name: Obfuscate using PyArmor
         shell: pwsh
         run: |
-          python -m pyarmor-8 gen --with-loader --output .\obf .\build_src
-          if (-Not (Test-Path ".\obf")) {
+          pyarmor pack -x " --onefile --windowed --icon=.\\resources\\icon\\icon.ico" --output .\\obf $env:ENTRY
+
+      - name: Validate obfuscation output
+        shell: pwsh
+        run: |
+          if (-Not (Test-Path ".\\obf")) {
             Write-Error "Obfuscation directory was not created."
             exit 1
           }
-          Copy-Item -Recurse -Force .\obf\* .\dist
+          Write-Host "Obfuscation complete, check .\\obf directory."
 
-      - name: Check Obfuscation Output
+      - name: Build with PyInstaller
         shell: pwsh
         run: |
-          Write-Host "Checking contents of the obfuscation output directory:"
-          Get-ChildItem -Path .\dist
+          $iconPath = ".\resources\icon\icon.ico"
+          $entryFilePath = ".\\obf\\galaxytimer.py"  # 使用 obfuscate 之后的位置
+          if (-not (Test-Path $iconPath)) {
+            Write-Host "Icon not found, continuing without setting an icon."
+            python -m pyinstaller --noconfirm --windowed --onefile --hidden-import=pyttsx3 --hidden-import=PySide6 --hidden-import=keyboard --add-data "build_src\\pyscript\\logic;logic" --add-data "build_src\\pyscript\\core;core" --add-data "build_src\\pyscript\\widgets;widgets" $entryFilePath
+          } else {
+            python -m pyinstaller --noconfirm --windowed --onefile --hidden-import=pyttsx3 --hidden-import=PySide6 --hidden-import=keyboard --icon=$iconPath --add-data "build_src\\pyscript\\logic;logic" --add-data "build_src\\pyscript\\core;core" --add-data "build_src\\pyscript\\widgets;widgets" $entryFilePath
+          }
 
-      - name: Validate Exe Creation via PyInstaller
+      - name: Rename and publish exe
         shell: pwsh
         run: |
-          python -m pyinstaller --noconfirm --windowed --onefile --icon=.\\resources\\icon\\icon.ico --distpath .\\dist .\\obf\\pyscript\\galaxytimer.py
-
-      - name: Rename and Publish Exe
-        shell: pwsh
-        run: |
-          $exePath = Join-Path -Path (Get-Location) -ChildPath "dist\galaxytimer.exe"
+          $exePath = Join-Path -Path (Get-Location) -ChildPath "dist\\galaxytimer.exe"
           if (Test-Path $exePath) {
-            Move-Item -Force $exePath .\GalaxyTimer.exe
+            Move-Item -Force $exePath .\\GalaxyTimer.exe
             Write-Host "Moved to GalaxyTimer.exe"
           } else {
             Write-Error "GalaxyTimer.exe not found in the dist directory."
-            exit 1
           }
 
-      - name: Clean Up
+      - name: Clean intermediate files (optional)
         shell: pwsh
         run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\dist, .\build
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\\dist, .\\build
           Get-ChildItem -Path . -Filter "*.spec" -File | ForEach-Object { Remove-Item -Force $_.FullName }
 
-      - name: Upload Artifact
+      - name: Upload GalaxyTimer.exe artifact
         uses: actions/upload-artifact@v4
         with:
           name: GalaxyTimer-exe
