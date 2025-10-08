@@ -10,7 +10,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     env:
-      PYTHON_VERSION: '3.11'  
+      PYTHON_VERSION: '3.10'  
       ENTRY: pyscript/galaxytimer.py
 
     steps:
