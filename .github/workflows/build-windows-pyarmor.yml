@@ -106,4 +106,10 @@ jobs:
         shell: pwsh
         run: |
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\dist, .\build
-          Get-ChildItem -Path . -Filter "*.spec" -File | ForEach-Object { Remove-▋
+          Get-ChildItem -Path . -Filter "*.spec" -File | ForEach-Object { Remove-Item -Force $_.FullName }
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GalaxyTimer-exe
+          path: GalaxyTimer.exe
