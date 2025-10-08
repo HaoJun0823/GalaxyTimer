@@ -22,28 +22,24 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Dependencies
+      - name: Install build tools and dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install pyinstaller pyarmor
+          python -m pip install pyinstaller pyarmor==8.1.0
+          # 安装requirements.txt中所有需依赖的包
           if (-Not (Test-Path "requirements.txt")) { 
             Write-Error "requirements.txt not found in the repository root."
             exit 1
           }
           python -m pip install -r requirements.txt
 
-      - name: Validate Installed Packages
+      - name: List Installed Packages
         shell: pwsh
         run: |
           echo "Installed Packages:"
           pip list
 
-      - name: Log Build Preparation Status
-        shell: pwsh
-        run: |
-          echo "Preparing build source and resources..."
-        
       - name: Prepare Build Source and Resources
         shell: pwsh
         run: |
@@ -59,7 +55,7 @@ jobs:
               Write-Host "Warning: Folder pyscript\$folder not found."
             }
           }
-
+      
       - name: Inject Build Salt
         shell: pwsh
         run: |
@@ -76,20 +72,25 @@ jobs:
       - name: Obfuscate with PyArmor
         shell: pwsh
         run: |
-          pyarmor pack -x " --onefile --noconfirm --windowed --icon=.\\resources\\icon\\icon.ico --distpath .\\dist" $env:ENTRY
-          if (-Not (Test-Path ".\\dist")) {
-            Write-Error "Output directory was not created."
+          python -m pyarmor-8 gen --with-loader --output .\obf .\build_src
+          if (-Not (Test-Path ".\obf")) {
+            Write-Error "Obfuscation directory was not created."
             exit 1
           }
-          Write-Host "Obfuscation complete, check .\\dist directory."
+          Copy-Item -Recurse -Force .\obf\* .\dist
 
       - name: Check Obfuscation Output
         shell: pwsh
         run: |
-          Write-Host "Checking contents of the dist directory:"
+          Write-Host "Checking contents of the obfuscation output directory:"
           Get-ChildItem -Path .\dist
 
-      - name: Validate Exe Creation
+      - name: Validate Exe Creation via PyInstaller
+        shell: pwsh
+        run: |
+          python -m pyinstaller --noconfirm --windowed --onefile --icon=.\\resources\\icon\\icon.ico --distpath .\\dist .\\obf\\pyscript\\galaxytimer.py
+
+      - name: Rename and Publish Exe
         shell: pwsh
         run: |
           $exePath = Join-Path -Path (Get-Location) -ChildPath "dist\galaxytimer.exe"
@@ -105,10 +106,4 @@ jobs:
         shell: pwsh
         run: |
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\dist, .\build
-          Get-ChildItem -Path . -Filter "*.spec" -File | ForEach-Object { Remove-Item -Force $_.FullName }
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: GalaxyTimer-exe
-          path: GalaxyTimer.exe
+          Get-ChildItem -Path . -Filter "*.spec" -File | ForEach-Object { Remove-▋
