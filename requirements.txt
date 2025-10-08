@@ -4,6 +4,7 @@ numpy==2.2.6
 Pillow==11.3.0
 pyttsx3==2.99
 
-scipy==1.16.2
+scipy==1.15.3
+
 
 
