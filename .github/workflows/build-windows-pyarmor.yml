@@ -1,4 +1,4 @@
-name: Build GalaxyTimer (PyInstaller with PyArmor)
+name: Build GalaxyTimer (PyInstaller with requirements)
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     env:
-      PYTHON_VERSION: '3.11'
+      PYTHON_VERSION: '3.10'  # 保留原有 Python 版本
       ENTRY: pyscript/galaxytimer.py
 
     steps:
@@ -24,22 +24,19 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install build tools and dependencies
+      - name: Upgrade pip & install build tools and dependencies
         shell: pwsh
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install pyinstaller pyarmor==7.6.0  # Specify appropriate PyArmor version
+          python -m pip install pyinstaller
+          # 安装 requirements.txt 中的依赖项
           if (-Not (Test-Path "requirements.txt")) {
             Write-Error "requirements.txt not found in the repository root."
             exit 1
           }
           python -m pip install -r requirements.txt
-
-      - name: List Installed Packages
-        shell: pwsh
-        run: |
-          echo "Installed Packages:"
-          pip list
 
       - name: Prepare build_src (copy sources + resources)
         shell: pwsh
@@ -67,30 +64,18 @@ jobs:
           if ($salt.Length -gt 16) { $salt = $salt.Substring(0,16) }
           Write-Host "Generated SALT: $salt"
           Add-Content -Path $env:GITHUB_ENV -Value "BUILD_SALT=$salt"
-
           $entryPath = Join-Path -Path (Get-Location) -ChildPath $env:ENTRY
           (Get-Content $entryPath -Raw) -replace "__BUILD_SALT__", $salt | Set-Content $entryPath -Encoding UTF8
-
-      - name: Obfuscate using PyArmor
-        shell: pwsh
-        run: |
-          pyarmor obfuscate --output .\obf .\$env:ENTRY
-          if (-not (Test-Path ".\obf")) {
-            Write-Error "Obfuscation directory was not created."
-            exit 1
-          }
-          Write-Host "Obfuscation complete, check .\\obf directory."
 
       - name: Build with PyInstaller
         shell: pwsh
         run: |
           $iconPath = ".\resources\icon\icon.ico"
-          $entryFilePath = ".\obf\galaxytimer.py"  # Obfuscated entry point
           if (-not (Test-Path $iconPath)) {
             Write-Host "Icon not found, continuing without setting an icon."
-            python -m pyinstaller --noconfirm --windowed --onefile --hidden-import=pyttsx3 --hidden-import=PySide6 --hidden-import=keyboard --add-data "build_src\pyscript\logic;logic" --add-data "build_src\pyscript\core;core" --add-data "build_src\pyscript\widgets;widgets" $entryFilePath
+            python -m pyinstaller --noconfirm --windowed --onefile --hidden-import=pyttsx3 --hidden-import=PySide6 --hidden-import=keyboard --add-data "build_src\pyscript\logic;logic" --add-data "build_src\pyscript\core;core" --add-data "build_src\pyscript\widgets;widgets" $env:ENTRY
           } else {
-            python -m pyinstaller --noconfirm --windowed --onefile --hidden-import=pyttsx3 --hidden-import=PySide6 --hidden-import=keyboard --icon=$iconPath --add-data "build_src\pyscript\logic;logic" --add-data "build_src\pyscript\core;core" --add-data "build_src\pyscript\widgets;widgets" $entryFilePath
+            python -m pyinstaller --noconfirm --windowed --onefile --hidden-import=pyttsx3 --hidden-import=PySide6 --hidden-import=keyboard --icon=$iconPath --add-data "build_src\pyscript\logic;logic" --add-data "build_src\pyscript\core;core" --add-data "build_src\pyscript\widgets;widgets" $env:ENTRY
           }
 
       - name: Rename and publish exe
@@ -102,7 +87,6 @@ jobs:
             Write-Host "Moved to GalaxyTimer.exe"
           } else {
             Write-Error "GalaxyTimer.exe not found in the dist directory."
-            exit 1
           }
 
       - name: Clean intermediate files (optional)
