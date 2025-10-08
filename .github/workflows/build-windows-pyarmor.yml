@@ -22,25 +22,29 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install build tools and dependencies
+      - name: Install Dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install pyinstaller pyarmor
-          # 安装requirements.txt中所有需依赖的包
-          if (-Not (Test-Path "requirements.txt")) {
+          if (-Not (Test-Path "requirements.txt")) { 
             Write-Error "requirements.txt not found in the repository root."
             exit 1
           }
           python -m pip install -r requirements.txt
 
-      - name: List Installed Packages
+      - name: Validate Installed Packages
         shell: pwsh
         run: |
           echo "Installed Packages:"
           pip list
 
-      - name: Prepare build_src (copy sources + resources)
+      - name: Log Build Preparation Status
+        shell: pwsh
+        run: |
+          echo "Preparing build source and resources..."
+        
+      - name: Prepare Build Source and Resources
         shell: pwsh
         run: |
           Remove-Item -Force -ErrorAction SilentlyContinue .\GalaxyTimer.exe
@@ -55,8 +59,8 @@ jobs:
               Write-Host "Warning: Folder pyscript\$folder not found."
             }
           }
-      
-      - name: Inject build salt (optional)
+
+      - name: Inject Build Salt
         shell: pwsh
         run: |
           $bytes = New-Object byte[] 12
@@ -69,18 +73,23 @@ jobs:
           $entryPath = Join-Path -Path (Get-Location) -ChildPath $env:ENTRY
           (Get-Content $entryPath -Raw) -replace "__BUILD_SALT__", $salt | Set-Content $entryPath -Encoding UTF8
 
-      - name: Obfuscate sources with PyArmor
+      - name: Obfuscate with PyArmor
         shell: pwsh
         run: |
-          pyarmor pack -x " --onefile --noconfirm --windowed --icon=.\\resources\\icon\\icon.ico" -O dist $env:ENTRY
+          pyarmor pack -x " --onefile --noconfirm --windowed --icon=.\\resources\\icon\\icon.ico --distpath .\\dist" $env:ENTRY
+          if (-Not (Test-Path ".\\dist")) {
+            Write-Error "Output directory was not created."
+            exit 1
+          }
+          Write-Host "Obfuscation complete, check .\\dist directory."
 
-      - name: Check dist directory contents
+      - name: Check Obfuscation Output
         shell: pwsh
         run: |
-          Write-Host "Contents of dist directory:"
+          Write-Host "Checking contents of the dist directory:"
           Get-ChildItem -Path .\dist
 
-      - name: Rename and publish exe
+      - name: Validate Exe Creation
         shell: pwsh
         run: |
           $exePath = Join-Path -Path (Get-Location) -ChildPath "dist\galaxytimer.exe"
@@ -92,13 +101,13 @@ jobs:
             exit 1
           }
 
-      - name: Clean up (optional)
+      - name: Clean Up
         shell: pwsh
         run: |
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\dist, .\build
           Get-ChildItem -Path . -Filter "*.spec" -File | ForEach-Object { Remove-Item -Force $_.FullName }
 
-      - name: Upload GalaxyTimer.exe artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: GalaxyTimer-exe
