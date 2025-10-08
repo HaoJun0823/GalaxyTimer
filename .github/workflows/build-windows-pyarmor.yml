@@ -10,7 +10,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     env:
-      PYTHON_VERSION: '3.11'  # 或保持3.10，按需选择
+      PYTHON_VERSION: '3.11'
       ENTRY: pyscript/galaxytimer.py
 
     steps:
@@ -28,7 +28,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install pyinstaller pyarmor==7.6.0  # 确保使用指定版本的 PyArmor
+          python -m pip install pyinstaller pyarmor==7.6.0  # Specify appropriate PyArmor version
           if (-Not (Test-Path "requirements.txt")) {
             Write-Error "requirements.txt not found in the repository root."
             exit 1
@@ -44,7 +44,8 @@ jobs:
       - name: Prepare build_src (copy sources + resources)
         shell: pwsh
         run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\GalaxyTimer.exe, .\build_src, .\obf, .\dist, .\build
+          Remove-Item -Force -ErrorAction SilentlyContinue .\GalaxyTimer.exe
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\build_src, .\obf, .\dist, .\build
           New-Item -ItemType Directory -Force -Path build_src | Out-Null
           Copy-Item -Recurse -Force -Path .\pyscript -Destination .\build_src\pyscript
           $srcFolders = @("logic", "core", "widgets")
@@ -73,12 +74,8 @@ jobs:
       - name: Obfuscate using PyArmor
         shell: pwsh
         run: |
-          pyarmor pack -x " --onefile --windowed --icon=.\\resources\\icon\\icon.ico" --output .\\obf $env:ENTRY
-
-      - name: Validate obfuscation output
-        shell: pwsh
-        run: |
-          if (-Not (Test-Path ".\\obf")) {
+          pyarmor obfuscate --output .\obf .\$env:ENTRY
+          if (-not (Test-Path ".\obf")) {
             Write-Error "Obfuscation directory was not created."
             exit 1
           }
@@ -88,29 +85,30 @@ jobs:
         shell: pwsh
         run: |
           $iconPath = ".\resources\icon\icon.ico"
-          $entryFilePath = ".\\obf\\galaxytimer.py"  # 使用 obfuscate 之后的位置
+          $entryFilePath = ".\obf\galaxytimer.py"  # Obfuscated entry point
           if (-not (Test-Path $iconPath)) {
             Write-Host "Icon not found, continuing without setting an icon."
-            python -m pyinstaller --noconfirm --windowed --onefile --hidden-import=pyttsx3 --hidden-import=PySide6 --hidden-import=keyboard --add-data "build_src\\pyscript\\logic;logic" --add-data "build_src\\pyscript\\core;core" --add-data "build_src\\pyscript\\widgets;widgets" $entryFilePath
+            python -m pyinstaller --noconfirm --windowed --onefile --hidden-import=pyttsx3 --hidden-import=PySide6 --hidden-import=keyboard --add-data "build_src\pyscript\logic;logic" --add-data "build_src\pyscript\core;core" --add-data "build_src\pyscript\widgets;widgets" $entryFilePath
           } else {
-            python -m pyinstaller --noconfirm --windowed --onefile --hidden-import=pyttsx3 --hidden-import=PySide6 --hidden-import=keyboard --icon=$iconPath --add-data "build_src\\pyscript\\logic;logic" --add-data "build_src\\pyscript\\core;core" --add-data "build_src\\pyscript\\widgets;widgets" $entryFilePath
+            python -m pyinstaller --noconfirm --windowed --onefile --hidden-import=pyttsx3 --hidden-import=PySide6 --hidden-import=keyboard --icon=$iconPath --add-data "build_src\pyscript\logic;logic" --add-data "build_src\pyscript\core;core" --add-data "build_src\pyscript\widgets;widgets" $entryFilePath
           }
 
       - name: Rename and publish exe
         shell: pwsh
         run: |
-          $exePath = Join-Path -Path (Get-Location) -ChildPath "dist\\galaxytimer.exe"
+          $exePath = Join-Path -Path (Get-Location) -ChildPath "dist\galaxytimer.exe"
           if (Test-Path $exePath) {
-            Move-Item -Force $exePath .\\GalaxyTimer.exe
+            Move-Item -Force $exePath .\GalaxyTimer.exe
             Write-Host "Moved to GalaxyTimer.exe"
           } else {
             Write-Error "GalaxyTimer.exe not found in the dist directory."
+            exit 1
           }
 
       - name: Clean intermediate files (optional)
         shell: pwsh
         run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\\dist, .\\build
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\dist, .\build
           Get-ChildItem -Path . -Filter "*.spec" -File | ForEach-Object { Remove-Item -Force $_.FullName }
 
       - name: Upload GalaxyTimer.exe artifact
