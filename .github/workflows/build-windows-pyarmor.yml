@@ -1,4 +1,4 @@
-name: Build GalaxyTimer (Win10/11, Python 3.11, slim + TTS)
+name: Build GalaxyTimer (Win10/11, Python 3.11, slim + TTS + pyscript data)
 
 on:
   push:
@@ -38,7 +38,11 @@ jobs:
           } else {
             Write-Host "No requirements.txt found. Skipping."
           }
-          python -c "import PySide6, pathlib; print('PySide6 at:', pathlib.Path(PySide6.__file__).resolve())"
+          python - <<'PY'
+import pathlib, sys
+import PySide6
+print("PySide6 at:", pathlib.Path(PySide6.__file__).resolve())
+PY
 
       - name: Inject build salt (optional)
         shell: pwsh
@@ -62,31 +66,55 @@ jobs:
             exit 1
           }
 
-      - name: Locate minimal Qt plugin folders (platforms & imageformats)
+      - name: Locate Qt plugin folders via QLibraryInfo (with fallback)
         id: qtpaths
         shell: pwsh
         run: |
-          $root = python -c "import pathlib, PySide6; print(pathlib.Path(PySide6.__file__).resolve().parent)"
-          if (-not $root) { Write-Error "Cannot locate PySide6 root"; exit 1 }
-          $qtPlugins = Join-Path $root "Qt\plugins"
-          $platforms  = Join-Path $qtPlugins "platforms"
-          $imagefmts  = Join-Path $qtPlugins "imageformats"
-          if (-not (Test-Path $platforms))  { Write-Error "Qt platforms not found: $platforms";  exit 1 }
-          if (-not (Test-Path $imagefmts))  { Write-Error "Qt imageformats not found: $imagefmts"; exit 1 }
-          "QTP_PLAT=$platforms" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "QTP_IMG=$imagefmts" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "Qt plugins -> platforms: $platforms"
-          Write-Host "Qt plugins -> imageformats: $imagefmts"
+          # 先用 QLibraryInfo 取官方插件目录
+          $plugins = python -c "from PySide6.QtCore import QLibraryInfo; import pathlib; print(pathlib.Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)))"
+          $plugins = $plugins.Trim()
+          Write-Host "QLibraryInfo PluginsPath -> $plugins"
 
-      - name: Build EXE with PyInstaller (slim + TTS deps)
+          $candidates = @()
+          if ($plugins) {
+            $candidates += (Join-Path $plugins "platforms")
+            $candidates += (Join-Path $plugins "imageformats")
+          }
+
+          # 回退：PySide6 根目录下的常见结构
+          $pysideRoot = python -c "import pathlib, PySide6; print(pathlib.Path(PySide6.__file__).resolve().parent)"
+          $pysideRoot = $pysideRoot.Trim()
+          if ($pysideRoot) {
+            $candidates += (Join-Path (Join-Path $pysideRoot 'Qt\plugins') 'platforms')
+            $candidates += (Join-Path (Join-Path $pysideRoot 'Qt\plugins') 'imageformats')
+            $candidates += (Join-Path (Join-Path $pysideRoot 'plugins') 'platforms')
+            $candidates += (Join-Path (Join-Path $pysideRoot 'plugins') 'imageformats')
+          }
+
+          # 去重并挑选最终的 platforms / imageformats
+          $platPath = $null; $imgPath = $null
+          foreach ($path in $candidates | Select-Object -Unique) {
+            if (-not (Test-Path $path)) { continue }
+            if ($path -like "*\platforms")   { if (-not $platPath) { $platPath = $path } }
+            if ($path -like "*\imageformats"){ if (-not $imgPath)  { $imgPath = $path } }
+          }
+
+          if (-not $platPath) { Write-Error "Qt platforms not found in candidates."; exit 1 }
+          if (-not $imgPath)  { Write-Error "Qt imageformats not found in candidates."; exit 1 }
+
+          "QTP_PLAT=$platPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "QTP_IMG=$imgPath"  | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Qt plugins -> platforms:  $platPath"
+          Write-Host "Qt plugins -> imageformats: $imgPath"
+
+      - name: Build EXE with PyInstaller (slim + TTS deps + pyscript data)
         shell: pwsh
         run: |
-          # 自动图标（存在才用；不强制打包 resources/）
+          # 自动图标（存在才用；按你的要求不打包 resources/）
           $icon = $null
           if (Test-Path ".\resources\icon\icon.ico") { $icon = ".\resources\icon\icon.ico" }
           elseif (Test-Path ".\Resources\icon\icon.ico") { $icon = ".\Resources\icon\icon.ico" }
 
-          # 仅添加必须的 Qt 插件目录；不打包 resources/
           $args = @(
             "--noconfirm","--clean","-F","-w",
 
@@ -99,12 +127,12 @@ jobs:
             "--collect-submodules","comtypes",
             "--collect-data","pyttsx3",
 
-            # ====== PySide6：只保留 Widgets 所需最小集合 ======
+            # ====== PySide6：最小 Widgets 集 ======
             "--collect-submodules","PySide6.QtCore",
             "--collect-submodules","PySide6.QtGui",
             "--collect-submodules","PySide6.QtWidgets",
 
-            # 明确排除未用的大模块（用到再移除对应 exclude）
+            # 明确排除未用的大模块（用到再移除此行）
             "--exclude-module","PySide6.QtWebEngineCore",
             "--exclude-module","PySide6.QtWebEngineWidgets",
             "--exclude-module","PySide6.QtWebEngineQuick",
@@ -119,16 +147,19 @@ jobs:
             "--exclude-module","PySide6.QtMultimedia",
             "--exclude-module","PySide6.QtNetwork"  # 若代码确实用到网络，请删掉此行
 
-            # 最小 Qt 插件（路径来自上一步）
+            # 最小 Qt 插件：来自上一步解析出的目录
             "--add-data","$env:QTP_PLAT;PySide6\plugins\platforms",
-            "--add-data","$env:QTP_IMG;PySide6\plugins\imageformats"
+            "--add-data","$env:QTP_IMG;PySide6\plugins\imageformats",
+
+            # ====== 按你的要求：pyscript 整体作为数据打入 ======
+            "--add-data",".\pyscript;pyscript"
           )
 
           if ($icon) { $args += @("--icon",$icon) }
 
-          # 不打包 resources/；也不强行把 pyscript 子目录整体打进去，避免体积膨胀
-
+          # 不打包 resources/ 目录（按你的要求）
           $args += $env:ENTRY
+
           Write-Host "pyinstaller $($args -join ' ')"
           pyinstaller @args
           if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller build failed."; exit 1 }
