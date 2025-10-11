@@ -132,7 +132,7 @@ class Voice:
             except Exception:
                 pass
             try:
-                engine.setProperty("rate"， int(self.m_rate))
+                engine.setProperty("rate", int(self.m_rate))
             except Exception:
                 pass
 
