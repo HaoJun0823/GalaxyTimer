@@ -1,9 +1,8 @@
-#!/_output_of_which_python_
-name: Build GalaxyTimer
+name: Build GalaxyTimer (PyInstaller with requirements)
 
 on:
   push:
-    branches: [ main ]
+    分支: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -11,27 +10,27 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     env:
-      PYTHON_VERSION: '3.11'
-      ENTRY: pyscript/galaxytimer.py  
+      PYTHON_VERSION: '3.11'  # 使用 Python 3.11
+      ENTRY: pyscript/galaxytimer.py
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
+          
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Upgrade pip & install build tools and dependencies
+      - name: Install dependencies and tools
         shell: pwsh
         env:
-          PIP_DISABLE_PIP_VERSION_CHECK: "1"  # 方便展示 pip 输出
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install pyinstaller pyttsx3 PySide6 keyboard  
+          python -m pip install pyinstaller
           # 安装 requirements.txt 中的依赖项
           if (-Not (Test-Path "requirements.txt")) {
             Write-Error "requirements.txt not found in the repository root."
@@ -65,7 +64,6 @@ jobs:
           if ($salt.Length -gt 16) { $salt = $salt.Substring(0,16) }
           Write-Host "Generated SALT: $salt"
           Add-Content -Path $env:GITHUB_ENV -Value "BUILD_SALT=$salt"
-
           $entryPath = Join-Path -Path (Get-Location) -ChildPath $env:ENTRY
           (Get-Content $entryPath -Raw) -replace "__BUILD_SALT__", $salt | Set-Content $entryPath -Encoding UTF8
 
