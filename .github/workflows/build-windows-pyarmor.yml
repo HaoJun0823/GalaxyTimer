@@ -38,10 +38,8 @@ jobs:
           } else {
             Write-Host "No requirements.txt found. Skipping."
           }
-          python - <<'PY'
-import pathlib, PySide6
-print("PySide6 at:", pathlib.Path(PySide6.__file__).resolve())
-PY
+          $pyside_loc = (python -c "import pathlib, PySide6; print(pathlib.Path(PySide6.__file__).resolve())")
+          Write-Host "PySide6 at: $pyside_loc"
 
       - name: Inject build salt (optional)
         shell: pwsh
@@ -69,14 +67,8 @@ PY
         id: qtpaths
         shell: pwsh
         run: |
-          # 用 QLibraryInfo 获取官方插件路径
-          $plugins = python - <<'PY'
-from PySide6.QtCore import QLibraryInfo
-from pathlib import Path
-p = Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath))
-print(p)
-PY
-          $plugins = $plugins.Trim()
+          # 先用 QLibraryInfo 获取官方插件目录（PowerShell 一行式）
+          $plugins = (python -c "from PySide6.QtCore import QLibraryInfo; from pathlib import Path; print(Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)))").Trim()
           Write-Host "QLibraryInfo PluginsPath -> $plugins"
 
           $candidates = @()
@@ -86,11 +78,7 @@ PY
           }
 
           # 回退：PySide6 安装根目录下的常见结构
-          $pysideRoot = python - <<'PY'
-import pathlib, PySide6
-print(pathlib.Path(PySide6.__file__).resolve().parent)
-PY
-          $pysideRoot = $pysideRoot.Trim()
+          $pysideRoot = (python -c "import pathlib, PySide6; print(pathlib.Path(PySide6.__file__).resolve().parent)").Trim()
           if ($pysideRoot) {
             $candidates += (Join-Path (Join-Path $pysideRoot 'Qt\plugins') 'platforms')
             $candidates += (Join-Path (Join-Path $pysideRoot 'Qt\plugins') 'imageformats')
@@ -134,12 +122,10 @@ PY
             "--collect-submodules","comtypes",
             "--collect-data","pyttsx3",
 
-            # ====== PySide6：Widgets + Svg + Xml（你的代码用到了 QSvgRenderer/QDomDocument） ======
+            # ====== PySide6：最小 Widgets 集 ======
             "--collect-submodules","PySide6.QtCore",
             "--collect-submodules","PySide6.QtGui",
             "--collect-submodules","PySide6.QtWidgets",
-            "--collect-submodules","PySide6.QtSvg",
-            "--collect-submodules","PySide6.QtXml",
 
             # 明确排除未用的大模块（用到再移除此行）
             "--exclude-module","PySide6.QtWebEngineCore",
@@ -154,20 +140,21 @@ PY
             "--exclude-module","PySide6.QtLocation",
             "--exclude-module","PySide6.QtPositioning",
             "--exclude-module","PySide6.QtMultimedia"
-            # "--exclude-module","PySide6.QtNetwork"  # 如果你的代码没用网络，可保留排除；用了就注释掉
+            # "--exclude-module","PySide6.QtNetwork"  # 若代码确实用到网络，请删掉此行
           )
 
-          # 最小 Qt 插件：来自上一步解析出的目录
+          # 最小 Qt 插件（来自前一步解析出路径）
           $args += @("--add-data","$env:QTP_PLAT;PySide6\plugins\platforms")
           $args += @("--add-data","$env:QTP_IMG;PySide6\plugins\imageformats")
 
-          # ====== 按你的要求：pyscript 整体作为数据打入（方便相对加载） ======
+          # ====== 按你的要求：pyscript 整体作为数据打入 ======
           $args += @("--add-data",".\pyscript;pyscript")
 
           if ($icon) { $args += @("--icon",$icon) }
 
           # 不打包 resources/ 目录（按你的要求）
           $args += $env:ENTRY
+
           Write-Host "pyinstaller $($args -join ' ')"
           pyinstaller @args
           if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller build failed."; exit 1 }
