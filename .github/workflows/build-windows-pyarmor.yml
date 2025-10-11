@@ -1,4 +1,4 @@
-name: Build GalaxyTimer EXE (PyArmor obfuscate + PyInstaller)
+name: Build GalaxyTimer (Full Windows support, Python 3.11)
 
 on:
   push:
@@ -6,85 +6,42 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
     timeout-minutes: 90
 
     env:
-      PYTHON_VERSION: '3.11'     # 如需 3.11 可改为 '3.11'
-      DEFAULT_ENTRY: 'pyscript/galaxytimer.py'
+      PYTHON_VERSION: '3.11'
+      ENTRY: 'pyscript/galaxytimer.py'
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Detect entry script (auto)
-        shell: pwsh
-        run: |
-          # 优先：在 pyscript 下寻找包含 __main__ 的脚本；否则默认用 DEFAULT_ENTRY
-          if (Test-Path .\pyscript) {
-            $hit = (Select-String -Path .\pyscript\*.py -Pattern "__name__\s*==\s*['""]__main__['""]" -SimpleMatch -List | Select-Object -First 1)
-            if ($hit) {
-              $entry = (Resolve-Path $hit.Path).Path
-              $rel = Resolve-Path -Relative $entry
-              Write-Host "Detected entry by __main__: $rel"
-              "ENTRY=$rel" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-            } elseif (Test-Path $env:DEFAULT_ENTRY) {
-              Write-Host "Fallback to DEFAULT_ENTRY: $($env:DEFAULT_ENTRY)"
-              "ENTRY=$($env:DEFAULT_ENTRY)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-            } else {
-              Write-Error "Cannot determine entry script. Please set env ENTRY manually."
-              exit 1
-            }
-          } else {
-            Write-Error "pyscript/ not found. Please adjust DEFAULT_ENTRY or repo structure."
-            exit 1
-          }
 
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install build tools & deps (PowerShell-safe)
+      - name: Upgrade pip & install dependencies
         shell: pwsh
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install pyinstaller pyarmor pyttsx3
-
-          # 验证 PyInstaller 安装（PowerShell 写法，用 $LASTEXITCODE）
-          python -m pip show pyinstaller
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "PyInstaller install failure"
-            exit 1
-          }
-
-          # 可选安装 requirements.txt
+          # 安装项目依赖及构建工具
+          python -m pip install pyinstaller pyttsx3 PySide6 keyboard comtypes pywin32
           if (Test-Path "requirements.txt") {
             python -m pip install -r requirements.txt
           } else {
-            Write-Host "requirements.txt not found. Skipping."
+            Write-Host "No requirements.txt found. Skipping extra deps."
           }
-
-      - name: Prepare build_src (copy sources & resources)
-        shell: pwsh
-        run: |
-          # 清理
-          Remove-Item -Force -ErrorAction SilentlyContinue .\GalaxyTimer.exe
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\build_src, .\obf, .\dist, .\build
-
-          # 复制源码与资源
-          New-Item -ItemType Directory -Force -Path build_src | Out-Null
-          if (Test-Path .\pyscript) { Copy-Item -Recurse -Force .\pyscript .\build_src\pyscript }
-          if (Test-Path .\resources) { Copy-Item -Recurse -Force .\resources .\build_src\resources }
-          if (Test-Path .\Resources) { Copy-Item -Recurse -Force .\Resources .\build_src\Resources }
 
       - name: Inject build salt (optional)
         shell: pwsh
         run: |
-          # 生成 12 字节随机盐并转 URL-safe Base64，截断至 16
           $bytes = New-Object byte[] 12
           (New-Object System.Security.Cryptography.RNGCryptoServiceProvider).GetBytes($bytes)
           $salt = [Convert]::ToBase64String($bytes).Replace('/','_').Replace('+','-').Replace('=','')
@@ -92,127 +49,76 @@ jobs:
           "BUILD_SALT=$salt" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Build salt: $salt"
 
-          # 在复制后的入口中替换占位符 __BUILD_SALT__
-          $entryRel = $env:ENTRY
-          $copyEntry = Join-Path -Path (Get-Location) -ChildPath $entryRel
-          $copyEntry = $copyEntry -replace [regex]::Escape("\pyscript\"), "\build_src\pyscript\"
-          if (Test-Path $copyEntry) {
-            (Get-Content $copyEntry -Raw) -replace "__BUILD_SALT__", $salt | Set-Content $copyEntry -Encoding UTF8
-            Write-Host "Injected salt into $copyEntry"
-          } else {
-            Write-Host "No copied entry found at $copyEntry (skip salt injection)"
+          if (Test-Path $env:ENTRY) {
+            $content = Get-Content $env:ENTRY -Raw
+            if ($content -match "__BUILD_SALT__") {
+              $content = $content -replace "__BUILD_SALT__", $salt
+              $content | Set-Content $env:ENTRY -Encoding UTF8
+              Write-Host "Injected salt into entry script."
+            } else {
+              Write-Host "No __BUILD_SALT__ placeholder detected, skip."
+            }
           }
 
-      - name: (Optional) Restore PyArmor registration from secret
-        # 没有注册文件会自动跳过；不在 if: 中直接使用 secrets，避免解析错误
-        shell: pwsh
-        env:
-          PYARMOR_REG_B64: ${{ secrets.PYARMOR_REG_B64 }}
-        run: |
-          if (-not $env:PYARMOR_REG_B64) {
-            Write-Host "No PYARMOR_REG_B64 secret — skipping pyarmor reg."
-          } else {
-            $bytes = [Convert]::FromBase64String($env:PYARMOR_REG_B64)
-            [IO.File]::WriteAllBytes("pyarmor-reg.zip", $bytes)
-            pyarmor reg pyarmor-reg.zip
-            Write-Host "PyArmor registration attempted."
-          }
-
-      - name: Obfuscate with PyArmor (repack path)
+      - name: Build EXE with PyInstaller
         shell: pwsh
         run: |
-          $entryRel = $env:ENTRY
-          $copied = (Join-Path (Get-Location) ("build_src\" + $entryRel.TrimStart('.\')))
-          if (-not (Test-Path $copied)) {
-            # 常见替换：把 \pyscript\ 替换到 \build_src\pyscript\
-            $copied = (Join-Path (Get-Location) ("build_src\" + $entryRel -replace '^pyscript', 'pyscript'))
-          }
-          if (-not (Test-Path $copied)) {
-            Write-Error "Copied entry not found: $copied"
-            exit 1
-          }
-
-          Write-Host "PyArmor obfuscate on: $copied"
-          pyarmor obfuscate --recursive --output obf $copied
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "PyArmor obfuscate failed."
-            exit 1
-          }
-
-          # 打印 obf 树便于调试
-          Write-Host "OBF tree (top 50):"
-          Get-ChildItem -Recurse .\obf | Select-Object FullName -First 50 | ForEach-Object { Write-Host $_.FullName }
-
-      - name: Find obfuscated entry (or fallback)
-        id: findobf
-        shell: pwsh
-        run: |
-          $targetName = [IO.Path]::GetFileName($env:ENTRY)  # galaxytimer.py
-          $obf = Get-ChildItem -Path .\obf -Filter $targetName -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($obf) {
-            "OBF_PATH=$($obf.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-            "USE_ORIGINAL=false" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-            Write-Host "Found obfuscated entry: $($obf.FullName)"
-          } else {
-            # 降级：使用原始入口继续打包，避免构建中断
-            $fallback = (Join-Path (Get-Location) $env:ENTRY)
-            "OBF_PATH=$fallback" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-            "USE_ORIGINAL=true" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-            Write-Host "Obfuscated entry NOT found. Fallback to original: $fallback"
-          }
-
-      - name: PyInstaller pack (onefile, hidden-import=pyttsx3)
-        shell: pwsh
-        run: |
-          $entryToPack = $env:OBF_PATH
-          $useOriginal = $env:USE_ORIGINAL -eq 'true'
-          if ($useOriginal) {
-            Write-Host "Packing ORIGINAL entry (obfuscation fallback): $entryToPack"
-          } else {
-            Write-Host "Packing OBFUSCATED entry: $entryToPack"
-          }
-
-          # 寻找 icon
+          # 自动检测图标
           $iconCandidates = @(
-            ".\build_src\resources\icon\icon.ico",
-            ".\build_src\Resources\icon\icon.ico",
             ".\resources\icon\icon.ico",
             ".\Resources\icon\icon.ico"
           )
           $icon = $null
           foreach ($p in $iconCandidates) { if (Test-Path $p) { $icon = $p; break } }
-          if ($icon) { Write-Host "Using icon: $icon" } else { Write-Host "Icon not found; continue without -i" }
 
           # 构建参数
-          $args = @("--noconfirm","--clean","-F","--hidden-import=pyttsx3","--distpath",".\dist","--workpath",".\build")
-          if ($icon) { $args += @("-i", $icon) }
-          $args += $entryToPack
+          $args = @(
+            "--noconfirm",
+            "--clean",
+            "-F",
+            "-w",
+            "--paths", ".\pyscript",
+            "--hidden-import", "pyttsx3.drivers",
+            "--hidden-import", "pyttsx3.drivers.sapi5",
+            "--hidden-import", "win32com.client",
+            "--hidden-import", "comtypes",
+            "--collect-all", "PySide6",
+            "--collect-submodules", "PySide6",
+            "--collect-binaries", "PySide6",
+            "--collect-data", "PySide6",
+            "--collect-all", "pyttsx3",
+            "--collect-all", "keyboard"
+          )
 
-          Write-Host "pyinstaller $($args -join ' ')"
-          pyinstaller @args
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "PyInstaller failed."
-            exit 1
+          if ($icon) { $args += @("--icon", $icon) }
+
+          # 加入资源文件夹
+          if (Test-Path ".\resources") { $args += @("--add-data", "resources;resources") }
+          if (Test-Path ".\Resources") { $args += @("--add-data", "Resources;Resources") }
+
+          # 加入 pyscript 子目录
+          $subDirs = @("logic","core","widgets","assets","ui","data","images","icons","fonts","themes")
+          foreach ($d in $subDirs) {
+            $p = Join-Path ".\pyscript" $d
+            if (Test-Path $p) { $args += @("--add-data", "$p;$d") }
           }
 
-      - name: Rename to GalaxyTimer.exe
+          $args += $env:ENTRY
+          Write-Host "Running PyInstaller..."
+          pyinstaller @args
+          if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller failed."; exit 1 }
+
+      - name: Rename and upload
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Path .\dist -Filter *.exe -File | Where-Object { $_.Name -match 'galaxytimer\.exe' } | Select-Object -First 1
-          if (-not $exe) { $exe = Get-ChildItem -Path .\dist -Filter *.exe -File | Select-Object -First 1 }
+          $exe = Get-ChildItem -Path .\dist -Filter *.exe -File | Select-Object -First 1
           if ($exe) {
             Move-Item -Force $exe.FullName .\GalaxyTimer.exe
-            Write-Host "Output: GalaxyTimer.exe"
+            Write-Host "Executable built: GalaxyTimer.exe"
           } else {
-            Write-Error "No exe found in dist/"
+            Write-Error "Executable not found!"
             exit 1
           }
-
-      - name: Clean intermediates (optional)
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue .\dist, .\build, .\obf, .\build_src
-          Get-ChildItem -Filter *.spec -File | ForEach-Object { Remove-Item -Force $_.FullName -ErrorAction SilentlyContinue }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
