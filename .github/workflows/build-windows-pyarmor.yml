@@ -82,6 +82,10 @@ jobs:
           $args = @(
             "--noconfirm","--clean","-F","-w",
 
+            # 显式添加 core 包
+            "--collect-submodules","core",
+            "--hidden-import","core.core_voice",
+
             # 语音：SAPI5 & comtypes（不携带 win32com）
             "--hidden-import","pyttsx3.drivers",
             "--hidden-import","pyttsx3.drivers.sapi5",
@@ -102,18 +106,23 @@ jobs:
             "--exclude-module","PySide6.QtWebEngineWidgets",
             "--exclude-module","PySide6.QtWebEngineQuick",
 
-            # 真正加盐（仅 PyInstaller 5.x 可用）
-            "--key","$env:PYI_KEY"
+            # 加盐（PyInstaller 5.x 可用）
+            "--key","$env:PYI_KEY",
+
+            # 明确搜索路径（可选，但更稳）
+            "--paths",".",
+            "--paths","pyscript"
           )
 
           if (Test-Path ".\resources\icon\icon.ico") {
             $args += @("--icon",".\resources\icon\icon.ico")
           }
 
-          # 按你的要求：不把 resources/ 打进包里
+          # 不把 resources/ 打进包里
           $args += $entry
 
           pyinstaller @args
+
 
       - name: UPX compress (optional)
         shell: pwsh
