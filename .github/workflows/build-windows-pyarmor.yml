@@ -36,10 +36,9 @@ jobs:
           if ($c -match 'os\.chdir\(cur_path\)') {
             Write-Host "CWD patch already exists. Skipping."
           } else {
-            # 用单行三元表达式替换，避免 if 代码块导致的缩进问题
-            # 捕获原来那一行的缩进，并回灌到新行的行首（$1）
+            # 捕获原行的缩进并在替换文本每一行回灌相同缩进；使用 `r`n 写入真实换行
             $pattern = '(?m)^(\s*)cur_path\s*=\s*os\.getcwd\(\)\s*$'
-            $replacement = '$1cur_path = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))' + "\n" + '$1os.chdir(cur_path)'
+            $replacement = '$1cur_path = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))' + "`r`n" + '$1os.chdir(cur_path)'
             $new = [regex]::Replace($c, $pattern, $replacement)
             Set-Content -Path $p -Value $new -Encoding UTF8
             Write-Host "Patched galaxytimer.py to set CWD to program dir."
