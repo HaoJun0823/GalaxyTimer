@@ -22,8 +22,8 @@ jobs:
           if (Test-Path "requirements.txt") {
             python -m pip install -r requirements.txt
           }
-          # 只装 PyInstaller / PyArmor，不装 pywin32
-          python -m pip install pyinstaller pyarmor
+          # 只装 PyInstaller，不装 pywin32
+          python -m pip install pyinstaller
 
       - name: Patch runtime CWD (fix resources path)
         shell: pwsh
@@ -36,21 +36,18 @@ jobs:
             Write-Host "CWD patch already exists. Skipping."
           } else {
             $pattern = 'cur_path\s*=\s*os\.getcwd\(\)'
-            $replacement = @'
-if getattr(sys, "frozen", False):
-    cur_path = os.path.dirname(sys.executable)
-else:
-    cur_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-os.chdir(cur_path)
-'@
+            $replacement =
+              'if getattr(sys, "frozen", False):' + "`n" +
+              '    cur_path = os.path.dirname(sys.executable)' + "`n" +
+              'else:' + "`n" +
+              '    cur_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))' + "`n" +
+              'os.chdir(cur_path)'
             $new = [regex]::Replace($c, $pattern, $replacement)
             Set-Content -Path $p -Value $new -Encoding UTF8
             Write-Host "Patched galaxytimer.py to set CWD to program dir."
           }
 
-      # （可选）如需 PyArmor 混淆，可开启以下两行：
-      # - name: Obfuscate with PyArmor (optional)
-      #   run: pyarmor gen -O obf -r pyscript
+
 
       - name: Generate random salt for PyInstaller --key
         shell: pwsh
