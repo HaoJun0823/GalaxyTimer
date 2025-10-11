@@ -57,7 +57,7 @@ class MainWindow(QLabel):
         core_event.BindEvent("RELOAD_TIMER", self.load_timer, self)
         core_event.BindEvent("REOPEN_MENU", self.ReOpenMenu, self)
 
-        core_voice.Speak(f"欢迎使用星河定时器！")
+        core_voice.Speak(f"欢迎使用星河定时器-饮江版，感谢星河大佬开源！")
 
     def update_pet_param(self):
         data = core_save.LoadJson(Path_Setting)
