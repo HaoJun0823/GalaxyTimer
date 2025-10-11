@@ -22,8 +22,8 @@ jobs:
           if (Test-Path "requirements.txt") {
             python -m pip install -r requirements.txt
           }
-          # 只装 PyInstaller / PyArmor，不装 pywin32
-          python -m pip install pyinstaller pyarmor
+          # 只装 PyInstaller ，不装 pywin32
+          python -m pip install pyinstaller 
 
       - name: Patch runtime CWD (fix resources path)  # 将 CWD 固定到程序根目录
         shell: pwsh
@@ -42,10 +42,7 @@ jobs:
             Write-Host "Patched galexytimer.py to set CWD to program dir."
           }
 
-      # （可选）若你确实需要 PyArmor 混淆，可开启该步：把 pyscript 混淆到 obf/pyscript
-      # - name: Obfuscate with PyArmor (optional)
-      #   run: |
-      #     pyarmor gen -O obf -r pyscript
+
 
       - name: Generate random salt for PyInstaller --key
         shell: pwsh
