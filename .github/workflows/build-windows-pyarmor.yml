@@ -22,7 +22,7 @@ jobs:
           if (Test-Path "requirements.txt") {
             python -m pip install -r requirements.txt
           }
-          # 固定 PyInstaller 到 5.x（支持 --key）；为 --key 增加 tinyaes；PyArmor 可选
+          # 固定 PyInstaller 到 5.x（支持 --key）；--key 需 tinyaes；PyArmor 可选
           python -m pip install pyinstaller==5.13.2 tinyaes pyarmor
 
       - name: Patch runtime CWD (fix resources path)
@@ -32,22 +32,20 @@ jobs:
           if (-not (Test-Path $p)) { Write-Host "galaxytimer.py not found, skip patch"; exit 0 }
           $c = Get-Content $p -Raw -Encoding UTF8
 
+          # 已经打过补丁就跳过
           if ($c -match 'os\.chdir\(cur_path\)') {
             Write-Host "CWD patch already exists. Skipping."
           } else {
-            $pattern = 'cur_path\s*=\s*os\.getcwd\(\)'
-            $replacement =
-              'if getattr(sys, "frozen", False):' + "`n" +
-              '    cur_path = os.path.dirname(sys.executable)' + "`n" +
-              'else:' + "`n" +
-              '    cur_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))' + "`n" +
-              'os.chdir(cur_path)'
+            # 用单行三元表达式替换，避免 if 代码块导致的缩进问题
+            # 捕获原来那一行的缩进，并回灌到新行的行首（$1）
+            $pattern = '(?m)^(\s*)cur_path\s*=\s*os\.getcwd\(\)\s*$'
+            $replacement = '$1cur_path = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))' + "\n" + '$1os.chdir(cur_path)'
             $new = [regex]::Replace($c, $pattern, $replacement)
             Set-Content -Path $p -Value $new -Encoding UTF8
             Write-Host "Patched galaxytimer.py to set CWD to program dir."
           }
 
-      # （可选）如需 PyArmor 代码混淆，取消注释下方两行（Build 步会自动切换入口至 obf）
+      # （可选）如需 PyArmor 代码混淆，取消注释（Build 步会自动切换入口至 obf）
       # - name: Obfuscate with PyArmor (optional)
       #   run: pyarmor gen -O obf -r pyscript
 
