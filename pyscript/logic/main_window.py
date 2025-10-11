@@ -1,7 +1,3 @@
-# --*utf-8*--
-# Author：一念断星河
-# Crete Data：2024/6/3
-# Desc：不过是大梦一场空，不过是孤影照惊鸿。
 import os
 import sys
 import threading
@@ -14,7 +10,7 @@ from PySide6.QtCore import *
 from PySide6.QtGui import *
 from PySide6.QtWidgets import *
 
-from core import core_timer, core_save, core_input, core_voice, core_event
+from pyscript.core import core_timer, core_save, core_input, core_voice, core_event
 from core.core_define import *
 from core.core_input import KeyType
 from core.functor import CFunctor
