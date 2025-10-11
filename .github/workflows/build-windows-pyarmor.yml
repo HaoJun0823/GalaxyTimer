@@ -1,4 +1,4 @@
-name: Build GalaxyTimer (Win10/11, Python 3.11, slim)
+name: Build GalaxyTimer (Win10/11, Python 3.11, slim + TTS)
 
 on:
   push:
@@ -31,14 +31,14 @@ jobs:
           PIP_DISABLE_PIP_VERSION_CHECK: "1"
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          # 仅安装必须运行依赖（GUI/TTS/键盘/COM）
+          # 必需依赖：GUI/TTS/键盘/COM
           python -m pip install pyinstaller PySide6 pyttsx3 keyboard comtypes pywin32
           if (Test-Path "requirements.txt") {
             python -m pip install -r requirements.txt
           } else {
             Write-Host "No requirements.txt found. Skipping."
           }
-          python -c "import PySide6, sys; print('PySide6 at:', PySide6.__file__)"
+          python -c "import PySide6, pathlib; print('PySide6 at:', pathlib.Path(PySide6.__file__).resolve())"
 
       - name: Inject build salt (optional)
         shell: pwsh
@@ -49,6 +49,7 @@ jobs:
             $salt = [Convert]::ToBase64String($bytes).Replace('/','_').Replace('+','-').Replace('=','')
             if ($salt.Length -gt 16) { $salt = $salt.Substring(0,16) }
             "BUILD_SALT=$salt" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
             $content = Get-Content $env:ENTRY -Raw
             if ($content -match "__BUILD_SALT__") {
               ($content -replace "__BUILD_SALT__", $salt) | Set-Content $env:ENTRY -Encoding UTF8
@@ -65,76 +66,69 @@ jobs:
         id: qtpaths
         shell: pwsh
         run: |
-          $root = python -c "import pathlib, PySide6; import sys; p=pathlib.Path(PySide6.__file__).resolve().parent; print(p)"
+          $root = python -c "import pathlib, PySide6; print(pathlib.Path(PySide6.__file__).resolve().parent)"
           if (-not $root) { Write-Error "Cannot locate PySide6 root"; exit 1 }
           $qtPlugins = Join-Path $root "Qt\plugins"
           $platforms  = Join-Path $qtPlugins "platforms"
           $imagefmts  = Join-Path $qtPlugins "imageformats"
-
-          if (-not (Test-Path $platforms))  { Write-Error "Qt platforms folder not found: $platforms";  exit 1 }
-          if (-not (Test-Path $imagefmts))  { Write-Error "Qt imageformats folder not found: $imagefmts"; exit 1 }
-
+          if (-not (Test-Path $platforms))  { Write-Error "Qt platforms not found: $platforms";  exit 1 }
+          if (-not (Test-Path $imagefmts))  { Write-Error "Qt imageformats not found: $imagefmts"; exit 1 }
           "QTP_PLAT=$platforms" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "QTP_IMG=$imagefmts" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Qt plugins -> platforms: $platforms"
+          Write-Host "Qt plugins -> imageformats: $imagefmts"
 
-          Write-Host "Qt plugins:"
-          Write-Host "  platforms = $platforms"
-          Write-Host "  imageformats = $imagefmts"
-
-      - name: Build EXE with PyInstaller (slim)
+      - name: Build EXE with PyInstaller (slim + TTS deps)
         shell: pwsh
         run: |
-          # 自动图标（存在才用）
+          # 自动图标（存在才用；不强制打包 resources/）
           $icon = $null
           if (Test-Path ".\resources\icon\icon.ico") { $icon = ".\resources\icon\icon.ico" }
           elseif (Test-Path ".\Resources\icon\icon.ico") { $icon = ".\Resources\icon\icon.ico" }
 
           # 仅添加必须的 Qt 插件目录；不打包 resources/
           $args = @(
-            "--noconfirm",
-            "--clean",
-            "-F",
-            "-w",
-            "--hidden-import", "pyttsx3.drivers",
-            "--hidden-import", "pyttsx3.drivers.sapi5",
-            "--hidden-import", "win32com.client",
-            "--hidden-import", "comtypes",
+            "--noconfirm","--clean","-F","-w",
 
-            # 最小 Qt 栈（Widgets 应用通常只需 Core/Gui/Widgets）
-            "--collect-submodules", "PySide6.QtCore",
-            "--collect-submodules", "PySide6.QtGui",
-            "--collect-submodules", "PySide6.QtWidgets",
+            # ====== 语音（SAPI5）关键依赖 ======
+            "--hidden-import","pyttsx3.drivers",
+            "--hidden-import","pyttsx3.drivers.sapi5",
+            "--hidden-import","win32com.client",
+            "--hidden-import","comtypes",
+            "--hidden-import","comtypes.gen",
+            "--collect-submodules","comtypes",
+            "--collect-data","pyttsx3",
 
-            # 明确排除巨型/未用模块，防止被 requirements 链接进来
-            "--exclude-module", "PySide6.QtWebEngineCore",
-            "--exclude-module", "PySide6.QtWebEngineWidgets",
-            "--exclude-module", "PySide6.QtWebEngineQuick",
-            "--exclude-module", "PySide6.QtQml",
-            "--exclude-module", "PySide6.QtQuick",
-            "--exclude-module", "PySide6.QtPdf",
-            "--exclude-module", "PySide6.QtPdfWidgets",
-            "--exclude-module", "PySide6.QtCharts",
-            "--exclude-module", "PySide6.QtDataVisualization",
-            "--exclude-module", "PySide6.QtLocation",
-            "--exclude-module", "PySide6.QtPositioning",
-            "--exclude-module", "PySide6.QtMultimedia",
-            "--exclude-module", "PySide6.QtNetwork",   # 如用网络模块，删掉此行
+            # ====== PySide6：只保留 Widgets 所需最小集合 ======
+            "--collect-submodules","PySide6.QtCore",
+            "--collect-submodules","PySide6.QtGui",
+            "--collect-submodules","PySide6.QtWidgets",
 
-            # 仅带平台与图片插件（路径来自上一步）
-            "--add-data", "$env:QTP_PLAT;PySide6\plugins\platforms",
-            "--add-data", "$env:QTP_IMG;PySide6\plugins\imageformats"
+            # 明确排除未用的大模块（用到再移除对应 exclude）
+            "--exclude-module","PySide6.QtWebEngineCore",
+            "--exclude-module","PySide6.QtWebEngineWidgets",
+            "--exclude-module","PySide6.QtWebEngineQuick",
+            "--exclude-module","PySide6.QtQml",
+            "--exclude-module","PySide6.QtQuick",
+            "--exclude-module","PySide6.QtPdf",
+            "--exclude-module","PySide6.QtPdfWidgets",
+            "--exclude-module","PySide6.QtCharts",
+            "--exclude-module","PySide6.QtDataVisualization",
+            "--exclude-module","PySide6.QtLocation",
+            "--exclude-module","PySide6.QtPositioning",
+            "--exclude-module","PySide6.QtMultimedia",
+            "--exclude-module","PySide6.QtNetwork"  # 若代码确实用到网络，请删掉此行
+
+            # 最小 Qt 插件（路径来自上一步）
+            "--add-data","$env:QTP_PLAT;PySide6\plugins\platforms",
+            "--add-data","$env:QTP_IMG;PySide6\plugins\imageformats"
           )
 
-          if ($icon) { $args += @("--icon", $icon) }
+          if ($icon) { $args += @("--icon",$icon) }
 
-          # 常见的项目内部子目录，如果你的代码是以包/相对路径加载这些，
-          # 且需要随 exe 提供，才加上。这里默认不加以控制体积。
-          # 如确有需要，请取消注释：
-          # $subDirs = @("logic","core","widgets","assets","ui","data","images","icons","fonts","themes")
-          # foreach ($d in $subDirs) { if (Test-Path ".\pyscript\$d") { $args += @("--add-data", ".\pyscript\$d;$d") } }
+          # 不打包 resources/；也不强行把 pyscript 子目录整体打进去，避免体积膨胀
 
           $args += $env:ENTRY
-
           Write-Host "pyinstaller $($args -join ' ')"
           pyinstaller @args
           if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller build failed."; exit 1 }
