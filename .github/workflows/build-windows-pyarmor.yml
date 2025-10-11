@@ -1,6 +1,8 @@
-name: Build GalaxyTimer (Win10/11, Python 3.11, data-mode + optional key)
+name: Build GalaxyTimer (Win10/11, Python 3.11, slim + TTS + pyscript)
 
 on:
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -19,7 +21,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -29,8 +31,8 @@ jobs:
           PIP_DISABLE_PIP_VERSION_CHECK: "1"
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          # 关键依赖：PyInstaller(5.x, 支持 --key) + tinyaes + GUI/TTS/键盘/COM
-          python -m pip install pyinstaller==5.13.2 tinyaes PySide6 pyttsx3 keyboard comtypes pywin32
+          # 必需依赖：GUI/TTS/键盘/COM
+          python -m pip install pyinstaller PySide6 pyttsx3 keyboard comtypes pywin32
           if (Test-Path "requirements.txt") {
             python -m pip install -r requirements.txt
           } else {
@@ -38,50 +40,31 @@ jobs:
           }
           $pyside_loc = (python -c "import pathlib, PySide6; print(pathlib.Path(PySide6.__file__).resolve())")
           Write-Host "PySide6 at: $pyside_loc"
-
-      - name: Patch runtime CWD (fix resources path)
+      - name: Inject build salt (optional)
         shell: pwsh
         run: |
-          $p = "pyscript/galaxytimer.py"
-          if (-not (Test-Path $p)) { Write-Host "galaxytimer.py not found, skip patch"; exit 0 }
-          $c = Get-Content $p -Raw -Encoding UTF8
-          if ($c -match 'os\.chdir\(cur_path\)') {
-            Write-Host "CWD patch already exists. Skipping."
+          if (Test-Path $env:ENTRY) {
+            $bytes = New-Object byte[] 12
+            (New-Object System.Security.Cryptography.RNGCryptoServiceProvider).GetBytes($bytes)
+            $salt = [Convert]::ToBase64String($bytes).Replace('/','_').Replace('+','-').Replace('=','')
+            if ($salt.Length -gt 16) { $salt = $salt.Substring(0,16) }
+            "BUILD_SALT=$salt" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            $content = Get-Content $env:ENTRY -Raw
+            if ($content -match "__BUILD_SALT__") {
+              ($content -replace "__BUILD_SALT__", $salt) | Set-Content $env:ENTRY -Encoding UTF8
+              Write-Host "Injected salt into entry."
+            } else {
+              Write-Host "No __BUILD_SALT__ placeholder - skip."
+            }
           } else {
-            $pattern = '(?m)^(\s*)cur_path\s*=\s*os\.getcwd\(\)\s*$'
-            $replacement = '$1cur_path = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))' + "`r`n" + '$1os.chdir(cur_path)'
-            $new = [regex]::Replace($c, $pattern, $replacement)
-            Set-Content -Path $p -Value $new -Encoding UTF8
-            Write-Host "Patched galaxytimer.py to set CWD to program dir."
+            Write-Error "Entry not found: $env:ENTRY"
+            exit 1
           }
-
-      - name: Inject build salt for --key (optional)
-        shell: pwsh
-        run: |
-          # 生成回退盐
-          $bytes = New-Object byte[] 12
-          (New-Object System.Security.Cryptography.RNGCryptoServiceProvider).GetBytes($bytes)
-          $salt = [Convert]::ToBase64String($bytes).Replace('/','_').Replace('+','-').Replace('=','')
-          if ($salt.Length -gt 16) { $salt = $salt.Substring(0,16) }
-          "BUILD_SALT=$salt" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-          # 解析优先级：HASHIDS_SALT > PYINSTALLER_KEY > BUILD_SALT
-          if ("${{ secrets.HASHIDS_SALT }}" -ne "") {
-            $env:PYI_KEY = "${{ secrets.HASHIDS_SALT }}"
-            Write-Host "Using HASHIDS_SALT from secrets."
-          } elseif ("${{ secrets.PYINSTALLER_KEY }}" -ne "") {
-            $env:PYI_KEY = "${{ secrets.PYINSTALLER_KEY }}"
-            Write-Host "Using PYINSTALLER_KEY from secrets."
-          } else {
-            $env:PYI_KEY = "$env:BUILD_SALT"
-            Write-Host "Using generated random salt as key."
-          }
-          "PYI_KEY=$($env:PYI_KEY)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
       - name: Locate Qt plugin folders via QLibraryInfo (with fallback)
         id: qtpaths
         shell: pwsh
         run: |
+          # 先用 QLibraryInfo 获取官方插件目录（PowerShell 一行式）
           $plugins = (python -c "from PySide6.QtCore import QLibraryInfo; from pathlib import Path; print(Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)))").Trim()
           Write-Host "QLibraryInfo PluginsPath -> $plugins"
           $candidates = @()
@@ -89,6 +72,7 @@ jobs:
             $candidates += (Join-Path $plugins "platforms")
             $candidates += (Join-Path $plugins "imageformats")
           }
+          # 回退：PySide6 安装根目录下的常见结构
           $pysideRoot = (python -c "import pathlib, PySide6; print(pathlib.Path(PySide6.__file__).resolve().parent)").Trim()
           if ($pysideRoot) {
             $candidates += (Join-Path (Join-Path $pysideRoot 'Qt\plugins') 'platforms')
@@ -96,6 +80,7 @@ jobs:
             $candidates += (Join-Path (Join-Path $pysideRoot 'plugins') 'platforms')
             $candidates += (Join-Path (Join-Path $pysideRoot 'plugins') 'imageformats')
           }
+          # 去重并挑选最终的 platforms / imageformats
           $platPath = $null; $imgPath = $null
           foreach ($path in $candidates | Select-Object -Unique) {
             if (-not (Test-Path $path)) { continue }
@@ -108,17 +93,15 @@ jobs:
           "QTP_IMG=$imgPath"  | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Qt plugins -> platforms:  $platPath"
           Write-Host "Qt plugins -> imageformats: $imgPath"
-
-      - name: Build EXE with PyInstaller (data-mode + TTS deps + pyscript data)
+      - name: Build EXE with PyInstaller (slim + TTS deps + pyscript data)
         shell: pwsh
         run: |
+          # 自动图标（存在才用；按你的要求不打包 resources/）
           $icon = $null
           if (Test-Path ".\resources\icon\icon.ico") { $icon = ".\resources\icon\icon.ico" }
           elseif (Test-Path ".\Resources\icon\icon.ico") { $icon = ".\Resources\icon\icon.ico" }
-
           $args = @(
             "--noconfirm","--clean","-F","-w",
-
             # ====== 语音（SAPI5）关键依赖 ======
             "--hidden-import","pyttsx3.drivers",
             "--hidden-import","pyttsx3.drivers.sapi5",
@@ -127,13 +110,11 @@ jobs:
             "--hidden-import","comtypes.gen",
             "--collect-submodules","comtypes",
             "--collect-data","pyttsx3",
-
             # ====== PySide6：最小 Widgets 集 ======
             "--collect-submodules","PySide6.QtCore",
             "--collect-submodules","PySide6.QtGui",
             "--collect-submodules","PySide6.QtWidgets",
-
-            # 明确排除未用大模块（用到再移除此行）
+            # 明确排除未用的大模块（用到再移除此行）
             "--exclude-module","PySide6.QtWebEngineCore",
             "--exclude-module","PySide6.QtWebEngineWidgets",
             "--exclude-module","PySide6.QtWebEngineQuick",
@@ -145,41 +126,20 @@ jobs:
             "--exclude-module","PySide6.QtDataVisualization",
             "--exclude-module","PySide6.QtLocation",
             "--exclude-module","PySide6.QtPositioning",
-            "--exclude-module","PySide6.QtMultimedia",
-
-            # ====== Qt 插件（最小必需） ======
-            "--add-data","$env:QTP_PLAT;PySide6\plugins\platforms",
-            "--add-data","$env:QTP_IMG;PySide6\plugins\imageformats",
-
-            # ====== 关键：把整个 pyscript 作为数据打入 ======
-            "--add-data",".\pyscript;pyscript"
-            # ↑ 注意：这里不要加逗号
+            "--exclude-module","PySide6.QtMultimedia"
+            # "--exclude-module","PySide6.QtNetwork"  # 若代码确实用到网络，请删掉此行
           )
-
+          # 最小 Qt 插件（来自前一步解析出路径）
+          $args += @("--add-data","$env:QTP_PLAT;PySide6\plugins\platforms")
+          $args += @("--add-data","$env:QTP_IMG;PySide6\plugins\imageformats")
+          # ====== 按你的要求：pyscript 整体作为数据打入 ======
+          $args += @("--add-data",".\pyscript;pyscript")
           if ($icon) { $args += @("--icon",$icon) }
-
-          # ====== （可选）字节码加密密钥（仅 PyInstaller 5.x 可用；如不想加盐，删掉这一行） ======
-          $args += @("--key","$env:PYI_KEY")
-
-          # 按你的要求：不把 resources/ 打进包里；以入口脚本构建
+          # 不打包 resources/ 目录（按你的要求）
           $args += $env:ENTRY
-
           Write-Host "pyinstaller $($args -join ' ')"
           pyinstaller @args
           if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller build failed."; exit 1 }
-
-
-      - name: UPX compress (optional)
-        shell: pwsh
-        run: |
-          choco install upx -y
-          $upx = "C:\ProgramData\chocolatey\lib\upx\tools\upx.exe"
-          if (Test-Path $upx) {
-            & $upx --best --lzma dist\*.exe
-          } else {
-            Write-Host "UPX not found, skip."
-          }
-
       - name: Rename and upload
         shell: pwsh
         run: |
@@ -191,7 +151,6 @@ jobs:
             Write-Error "Executable not found!"
             exit 1
           }
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
