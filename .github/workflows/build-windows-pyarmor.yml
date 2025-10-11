@@ -1,29 +1,43 @@
-name: build-windows-pyarmor
+name: Build GalaxyTimer (Win10/11, Python 3.11, data-mode + optional key)
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
+    timeout-minutes: 90
+
+    env:
+      PYTHON_VERSION: '3.11'
+      ENTRY: 'pyscript/galaxytimer.py'
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install deps
+      - name: Install build deps
+        shell: pwsh
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
         run: |
           python -m pip install --upgrade pip setuptools wheel
+          # 关键依赖：PyInstaller(5.x, 支持 --key) + tinyaes + GUI/TTS/键盘/COM
+          python -m pip install pyinstaller==5.13.2 tinyaes PySide6 pyttsx3 keyboard comtypes pywin32
           if (Test-Path "requirements.txt") {
             python -m pip install -r requirements.txt
+          } else {
+            Write-Host "No requirements.txt found. Skipping."
           }
-          # 固定 PyInstaller 到 5.x（支持 --key）；--key 需 tinyaes；PyArmor 可选
-          python -m pip install pyinstaller==5.13.2 tinyaes pyarmor
+          $pyside_loc = (python -c "import pathlib, PySide6; print(pathlib.Path(PySide6.__file__).resolve())")
+          Write-Host "PySide6 at: $pyside_loc"
 
       - name: Patch runtime CWD (fix resources path)
         shell: pwsh
@@ -31,12 +45,9 @@ jobs:
           $p = "pyscript/galaxytimer.py"
           if (-not (Test-Path $p)) { Write-Host "galaxytimer.py not found, skip patch"; exit 0 }
           $c = Get-Content $p -Raw -Encoding UTF8
-
-          # 已经打过补丁就跳过
           if ($c -match 'os\.chdir\(cur_path\)') {
             Write-Host "CWD patch already exists. Skipping."
           } else {
-            # 捕获原行的缩进并在替换文本每一行回灌相同缩进；使用 `r`n 写入真实换行
             $pattern = '(?m)^(\s*)cur_path\s*=\s*os\.getcwd\(\)\s*$'
             $replacement = '$1cur_path = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))' + "`r`n" + '$1os.chdir(cur_path)'
             $new = [regex]::Replace($c, $pattern, $replacement)
@@ -44,23 +55,17 @@ jobs:
             Write-Host "Patched galaxytimer.py to set CWD to program dir."
           }
 
-      # （可选）如需 PyArmor 代码混淆，取消注释（Build 步会自动切换入口至 obf）
-      # - name: Obfuscate with PyArmor (optional)
-      #   run: pyarmor gen -O obf -r pyscript
-
-      - name: Generate random salt for PyInstaller --key (fallback)
+      - name: Inject build salt for --key (optional)
         shell: pwsh
         run: |
+          # 生成回退盐
           $bytes = New-Object byte[] 12
           (New-Object System.Security.Cryptography.RNGCryptoServiceProvider).GetBytes($bytes)
           $salt = [Convert]::ToBase64String($bytes).Replace('/','_').Replace('+','-').Replace('=','')
           if ($salt.Length -gt 16) { $salt = $salt.Substring(0,16) }
           "BUILD_SALT=$salt" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "Random salt generated."
 
-      - name: Resolve KEY (prefer HASHIDS_SALT, then PYINSTALLER_KEY, else fallback)
-        shell: pwsh
-        run: |
+          # 解析优先级：HASHIDS_SALT > PYINSTALLER_KEY > BUILD_SALT
           if ("${{ secrets.HASHIDS_SALT }}" -ne "") {
             $env:PYI_KEY = "${{ secrets.HASHIDS_SALT }}"
             Write-Host "Using HASHIDS_SALT from secrets."
@@ -73,57 +78,97 @@ jobs:
           }
           "PYI_KEY=$($env:PYI_KEY)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Build EXE with PyInstaller (salted)
+      - name: Locate Qt plugin folders via QLibraryInfo (with fallback)
+        id: qtpaths
         shell: pwsh
         run: |
-          $entry = "pyscript/galaxytimer.py"
-          if (Test-Path "obf/pyscript/galaxytimer.py") { $entry = "obf/pyscript/galaxytimer.py" }  # 若启用 PyArmor 则使用混淆后的入口
+          $plugins = (python -c "from PySide6.QtCore import QLibraryInfo; from pathlib import Path; print(Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)))").Trim()
+          Write-Host "QLibraryInfo PluginsPath -> $plugins"
+          $candidates = @()
+          if ($plugins) {
+            $candidates += (Join-Path $plugins "platforms")
+            $candidates += (Join-Path $plugins "imageformats")
+          }
+          $pysideRoot = (python -c "import pathlib, PySide6; print(pathlib.Path(PySide6.__file__).resolve().parent)").Trim()
+          if ($pysideRoot) {
+            $candidates += (Join-Path (Join-Path $pysideRoot 'Qt\plugins') 'platforms')
+            $candidates += (Join-Path (Join-Path $pysideRoot 'Qt\plugins') 'imageformats')
+            $candidates += (Join-Path (Join-Path $pysideRoot 'plugins') 'platforms')
+            $candidates += (Join-Path (Join-Path $pysideRoot 'plugins') 'imageformats')
+          }
+          $platPath = $null; $imgPath = $null
+          foreach ($path in $candidates | Select-Object -Unique) {
+            if (-not (Test-Path $path)) { continue }
+            if ($path -like "*\platforms")   { if (-not $platPath) { $platPath = $path } }
+            if ($path -like "*\imageformats"){ if (-not $imgPath)  { $imgPath  = $path } }
+          }
+          if (-not $platPath) { Write-Error "Qt platforms not found in candidates."; exit 1 }
+          if (-not $imgPath)  { Write-Error "Qt imageformats not found in candidates."; exit 1 }
+          "QTP_PLAT=$platPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "QTP_IMG=$imgPath"  | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Qt plugins -> platforms:  $platPath"
+          Write-Host "Qt plugins -> imageformats: $imgPath"
+
+      - name: Build EXE with PyInstaller (data-mode + TTS deps + pyscript data)
+        shell: pwsh
+        run: |
+          $icon = $null
+          if (Test-Path ".\resources\icon\icon.ico") { $icon = ".\resources\icon\icon.ico" }
+          elseif (Test-Path ".\Resources\icon\icon.ico") { $icon = ".\Resources\icon\icon.ico" }
 
           $args = @(
             "--noconfirm","--clean","-F","-w",
 
-            # === 使用仓库里的 hooks，并把 core 包“全收”（含数据）===
-            "--additional-hooks-dir","hooks",
-            "--collect-all","core",
-            "--collect-submodules","core",
-            "--hidden-import","core.core_voice",
-
-            # 语音：SAPI5 & comtypes（不携带 win32com）
+            # ====== 语音（SAPI5）关键依赖 ======
             "--hidden-import","pyttsx3.drivers",
             "--hidden-import","pyttsx3.drivers.sapi5",
+            "--hidden-import","win32com.client",
             "--hidden-import","comtypes",
             "--hidden-import","comtypes.gen",
             "--collect-submodules","comtypes",
             "--collect-data","pyttsx3",
 
-            # PySide6：核心模块 + Svg/Xml
+            # ====== PySide6：最小 Widgets 集 ======
             "--collect-submodules","PySide6.QtCore",
             "--collect-submodules","PySide6.QtGui",
             "--collect-submodules","PySide6.QtWidgets",
-            "--collect-submodules","PySide6.QtSvg",
-            "--collect-submodules","PySide6.QtXml",
 
-            # 体积控制：明确排除未用 webengine
+            # 明确排除未用大模块（用到再移除此行）
             "--exclude-module","PySide6.QtWebEngineCore",
             "--exclude-module","PySide6.QtWebEngineWidgets",
             "--exclude-module","PySide6.QtWebEngineQuick",
+            "--exclude-module","PySide6.QtQml",
+            "--exclude-module","PySide6.QtQuick",
+            "--exclude-module","PySide6.QtPdf",
+            "--exclude-module","PySide6.QtPdfWidgets",
+            "--exclude-module","PySide6.QtCharts",
+            "--exclude-module","PySide6.QtDataVisualization",
+            "--exclude-module","PySide6.QtLocation",
+            "--exclude-module","PySide6.QtPositioning",
+            "--exclude-module","PySide6.QtMultimedia",
 
-            # 让绝对导入优先命中你的源码路径
-            "--paths",".",
-            "--paths","pyscript",
+            # ====== Qt 插件（最小必需） ======
+            "--add-data","$env:QTP_PLAT;PySide6\plugins\platforms",
+            "--add-data","$env:QTP_IMG;PySide6\plugins\imageformats",
 
-            # 真正加盐（仅 PyInstaller 5.x 可用）
-            "--key","$env:PYI_KEY"
+            # ====== 关键：把整个 pyscript 作为数据打入 ======
+            "--add-data",".\pyscript;pyscript",
+
+            # ====== （可选）图标 ======
+            # 仅当存在才使用
           )
 
-          if (Test-Path ".\resources\icon\icon.ico") {
-            $args += @("--icon",".\resources\icon\icon.ico")
-          }
+          if ($icon) { $args += @("--icon",$icon) }
 
-          # 不把 resources/ 打进包里
-          $args += $entry
+          # ====== （可选）字节码加密密钥（仅 PyInstaller 5.x 可用；如不想加盐，删掉这一行） ======
+          $args += @("--key","$env:PYI_KEY")
 
+          # 按你的要求：不把 resources/ 打进包里；以入口脚本构建
+          $args += $env:ENTRY
+
+          Write-Host "pyinstaller $($args -join ' ')"
           pyinstaller @args
+          if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller build failed."; exit 1 }
 
       - name: UPX compress (optional)
         shell: pwsh
@@ -136,8 +181,20 @@ jobs:
             Write-Host "UPX not found, skip."
           }
 
+      - name: Rename and upload
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path .\dist -Filter *.exe -File | Select-Object -First 1
+          if ($exe) {
+            Move-Item -Force $exe.FullName .\GalaxyTimer.exe
+            Write-Host "Executable built: GalaxyTimer.exe"
+          } else {
+            Write-Error "Executable not found!"
+            exit 1
+          }
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GalaxyTimer_Windows
-          path: dist/*.exe
+          name: GalaxyTimer-exe
+          path: GalaxyTimer.exe
