@@ -1,3 +1,0 @@
-git apply 0001-core-hook-and-workflow.patch
-git add .
-git commit -m "Add PyInstaller hook for core and update workflow args"
