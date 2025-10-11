@@ -82,7 +82,7 @@ jobs:
           $args = @(
             "--noconfirm","--clean","-F","-w",
 
-            # === 使用源码里的 hooks，并把 core 包“全收” ===
+            # === 使用仓库里的 hooks，并把 core 包“全收”（含数据）===
             "--additional-hooks-dir","hooks",
             "--collect-all","core",
             "--collect-submodules","core",
@@ -108,11 +108,11 @@ jobs:
             "--exclude-module","PySide6.QtWebEngineWidgets",
             "--exclude-module","PySide6.QtWebEngineQuick",
 
-            # 明确搜索路径（让顶层包可被绝对导入）
+            # 让绝对导入优先命中你的源码路径
             "--paths",".",
             "--paths","pyscript",
 
-            # 加盐（PyInstaller 5.x 可用）
+            # 真正加盐（仅 PyInstaller 5.x 可用）
             "--key","$env:PYI_KEY"
           )
 
