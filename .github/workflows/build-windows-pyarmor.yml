@@ -1,3 +1,114 @@
+name: Build GalaxyTimer (Win10/11, Python 3.11, data-mode + optional key)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    env:
+      PYTHON_VERSION: '3.11'
+      ENTRY: 'pyscript/galaxytimer.py'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install build deps
+        shell: pwsh
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          # 关键依赖：PyInstaller(5.x, 支持 --key) + tinyaes + GUI/TTS/键盘/COM
+          python -m pip install pyinstaller==5.13.2 tinyaes PySide6 pyttsx3 keyboard comtypes pywin32
+          if (Test-Path "requirements.txt") {
+            python -m pip install -r requirements.txt
+          } else {
+            Write-Host "No requirements.txt found. Skipping."
+          }
+          $pyside_loc = (python -c "import pathlib, PySide6; print(pathlib.Path(PySide6.__file__).resolve())")
+          Write-Host "PySide6 at: $pyside_loc"
+
+      - name: Patch runtime CWD (fix resources path)
+        shell: pwsh
+        run: |
+          $p = "pyscript/galaxytimer.py"
+          if (-not (Test-Path $p)) { Write-Host "galaxytimer.py not found, skip patch"; exit 0 }
+          $c = Get-Content $p -Raw -Encoding UTF8
+          if ($c -match 'os\.chdir\(cur_path\)') {
+            Write-Host "CWD patch already exists. Skipping."
+          } else {
+            $pattern = '(?m)^(\s*)cur_path\s*=\s*os\.getcwd\(\)\s*$'
+            $replacement = '$1cur_path = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))' + "`r`n" + '$1os.chdir(cur_path)'
+            $new = [regex]::Replace($c, $pattern, $replacement)
+            Set-Content -Path $p -Value $new -Encoding UTF8
+            Write-Host "Patched galaxytimer.py to set CWD to program dir."
+          }
+
+      - name: Inject build salt for --key (optional)
+        shell: pwsh
+        run: |
+          # 生成回退盐
+          $bytes = New-Object byte[] 12
+          (New-Object System.Security.Cryptography.RNGCryptoServiceProvider).GetBytes($bytes)
+          $salt = [Convert]::ToBase64String($bytes).Replace('/','_').Replace('+','-').Replace('=','')
+          if ($salt.Length -gt 16) { $salt = $salt.Substring(0,16) }
+          "BUILD_SALT=$salt" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          # 解析优先级：HASHIDS_SALT > PYINSTALLER_KEY > BUILD_SALT
+          if ("${{ secrets.HASHIDS_SALT }}" -ne "") {
+            $env:PYI_KEY = "${{ secrets.HASHIDS_SALT }}"
+            Write-Host "Using HASHIDS_SALT from secrets."
+          } elseif ("${{ secrets.PYINSTALLER_KEY }}" -ne "") {
+            $env:PYI_KEY = "${{ secrets.PYINSTALLER_KEY }}"
+            Write-Host "Using PYINSTALLER_KEY from secrets."
+          } else {
+            $env:PYI_KEY = "$env:BUILD_SALT"
+            Write-Host "Using generated random salt as key."
+          }
+          "PYI_KEY=$($env:PYI_KEY)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Locate Qt plugin folders via QLibraryInfo (with fallback)
+        id: qtpaths
+        shell: pwsh
+        run: |
+          $plugins = (python -c "from PySide6.QtCore import QLibraryInfo; from pathlib import Path; print(Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)))").Trim()
+          Write-Host "QLibraryInfo PluginsPath -> $plugins"
+          $candidates = @()
+          if ($plugins) {
+            $candidates += (Join-Path $plugins "platforms")
+            $candidates += (Join-Path $plugins "imageformats")
+          }
+          $pysideRoot = (python -c "import pathlib, PySide6; print(pathlib.Path(PySide6.__file__).resolve().parent)").Trim()
+          if ($pysideRoot) {
+            $candidates += (Join-Path (Join-Path $pysideRoot 'Qt\plugins') 'platforms')
+            $candidates += (Join-Path (Join-Path $pysideRoot 'Qt\plugins') 'imageformats')
+            $candidates += (Join-Path (Join-Path $pysideRoot 'plugins') 'platforms')
+            $candidates += (Join-Path (Join-Path $pysideRoot 'plugins') 'imageformats')
+          }
+          $platPath = $null; $imgPath = $null
+          foreach ($path in $candidates | Select-Object -Unique) {
+            if (-not (Test-Path $path)) { continue }
+            if ($path -like "*\platforms")   { if (-not $platPath) { $platPath = $path } }
+            if ($path -like "*\imageformats"){ if (-not $imgPath)  { $imgPath  = $path } }
+          }
+          if (-not $platPath) { Write-Error "Qt platforms not found in candidates."; exit 1 }
+          if (-not $imgPath)  { Write-Error "Qt imageformats not found in candidates."; exit 1 }
+          "QTP_PLAT=$platPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "QTP_IMG=$imgPath"  | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Qt plugins -> platforms:  $platPath"
+          Write-Host "Qt plugins -> imageformats: $imgPath"
+
       - name: Build EXE with PyInstaller (data-mode + TTS deps + pyscript data)
         shell: pwsh
         run: |
@@ -56,3 +167,33 @@
           Write-Host "pyinstaller $($args -join ' ')"
           pyinstaller @args
           if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller build failed."; exit 1 }
+
+
+      - name: UPX compress (optional)
+        shell: pwsh
+        run: |
+          choco install upx -y
+          $upx = "C:\ProgramData\chocolatey\lib\upx\tools\upx.exe"
+          if (Test-Path $upx) {
+            & $upx --best --lzma dist\*.exe
+          } else {
+            Write-Host "UPX not found, skip."
+          }
+
+      - name: Rename and upload
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path .\dist -Filter *.exe -File | Select-Object -First 1
+          if ($exe) {
+            Move-Item -Force $exe.FullName .\GalaxyTimer.exe
+            Write-Host "Executable built: GalaxyTimer.exe"
+          } else {
+            Write-Error "Executable not found!"
+            exit 1
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GalaxyTimer-exe
+          path: GalaxyTimer.exe
