@@ -22,8 +22,8 @@ jobs:
           if (Test-Path "requirements.txt") {
             python -m pip install -r requirements.txt
           }
-          # 固定 PyInstaller 到 5.x（支持 --key）；PyArmor 可选
-          python -m pip install pyinstaller==5.13.2 pyarmor
+          # 固定 PyInstaller 到 5.x（支持 --key）；为 --key 增加 tinyaes；PyArmor 可选
+          python -m pip install pyinstaller==5.13.2 tinyaes pyarmor
 
       - name: Patch runtime CWD (fix resources path)
         shell: pwsh
@@ -47,7 +47,7 @@ jobs:
             Write-Host "Patched galaxytimer.py to set CWD to program dir."
           }
 
-      # （可选）如需 PyArmor 代码混淆，取消注释下方两行（并保持 Build 步入口自动切换到 obf 目录）
+      # （可选）如需 PyArmor 代码混淆，取消注释下方两行（Build 步会自动切换入口至 obf）
       # - name: Obfuscate with PyArmor (optional)
       #   run: pyarmor gen -O obf -r pyscript
 
