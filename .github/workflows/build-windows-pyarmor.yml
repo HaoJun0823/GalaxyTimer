@@ -22,7 +22,7 @@ jobs:
           if (Test-Path "requirements.txt") {
             python -m pip install -r requirements.txt
           }
-          # 固定到 PyInstaller 5.x（保留 --key）
+          # 固定 PyInstaller 到 5.x（支持 --key）；PyArmor 可选
           python -m pip install pyinstaller==5.13.2 pyarmor
 
       - name: Patch runtime CWD (fix resources path)
@@ -31,6 +31,7 @@ jobs:
           $p = "pyscript/galaxytimer.py"
           if (-not (Test-Path $p)) { Write-Host "galaxytimer.py not found, skip patch"; exit 0 }
           $c = Get-Content $p -Raw -Encoding UTF8
+
           if ($c -match 'os\.chdir\(cur_path\)') {
             Write-Host "CWD patch already exists. Skipping."
           } else {
@@ -46,11 +47,11 @@ jobs:
             Write-Host "Patched galaxytimer.py to set CWD to program dir."
           }
 
-      # （可选）如需 PyArmor 混淆，再开启：
+      # （可选）如需 PyArmor 代码混淆，取消注释下方两行（并保持 Build 步入口自动切换到 obf 目录）
       # - name: Obfuscate with PyArmor (optional)
       #   run: pyarmor gen -O obf -r pyscript
 
-      - name: Generate random salt for PyInstaller --key
+      - name: Generate random salt for PyInstaller --key (fallback)
         shell: pwsh
         run: |
           $bytes = New-Object byte[] 12
@@ -60,10 +61,13 @@ jobs:
           "BUILD_SALT=$salt" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Random salt generated."
 
-      - name: Resolve KEY (prefer secrets, else random)
+      - name: Resolve KEY (prefer HASHIDS_SALT, then PYINSTALLER_KEY, else fallback)
         shell: pwsh
         run: |
-          if ("${{ secrets.PYINSTALLER_KEY }}" -ne "") {
+          if ("${{ secrets.HASHIDS_SALT }}" -ne "") {
+            $env:PYI_KEY = "${{ secrets.HASHIDS_SALT }}"
+            Write-Host "Using HASHIDS_SALT from secrets."
+          } elseif ("${{ secrets.PYINSTALLER_KEY }}" -ne "") {
             $env:PYI_KEY = "${{ secrets.PYINSTALLER_KEY }}"
             Write-Host "Using PYINSTALLER_KEY from secrets."
           } else {
@@ -76,7 +80,7 @@ jobs:
         shell: pwsh
         run: |
           $entry = "pyscript/galaxytimer.py"
-          if (Test-Path "obf/pyscript/galaxytimer.py") { $entry = "obf/pyscript/galaxytimer.py" }
+          if (Test-Path "obf/pyscript/galaxytimer.py") { $entry = "obf/pyscript/galaxytimer.py" }  # 若启用 PyArmor 则使用混淆后的入口
 
           $args = @(
             "--noconfirm","--clean","-F","-w",
@@ -101,7 +105,7 @@ jobs:
             "--exclude-module","PySide6.QtWebEngineWidgets",
             "--exclude-module","PySide6.QtWebEngineQuick",
 
-            # 真正加盐（PyInstaller 5.x 可用）
+            # 真正加盐（仅 PyInstaller 5.x 可用）
             "--key","$env:PYI_KEY"
           )
 
@@ -109,8 +113,9 @@ jobs:
             $args += @("--icon",".\resources\icon\icon.ico")
           }
 
-          # 不打包 resources/
+          # 按你的要求：不把 resources/ 打进包里
           $args += $entry
+
           pyinstaller @args
 
       - name: UPX compress (optional)
@@ -118,7 +123,11 @@ jobs:
         run: |
           choco install upx -y
           $upx = "C:\ProgramData\chocolatey\lib\upx\tools\upx.exe"
-          if (Test-Path $upx) { & $upx --best --lzma dist\*.exe } else { Write-Host "UPX not found, skip." }
+          if (Test-Path $upx) {
+            & $upx --best --lzma dist\*.exe
+          } else {
+            Write-Host "UPX not found, skip."
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
