@@ -22,27 +22,35 @@ jobs:
           if (Test-Path "requirements.txt") {
             python -m pip install -r requirements.txt
           }
-          # 只装 PyInstaller ，不装 pywin32
-          python -m pip install pyinstaller 
+          # 只装 PyInstaller / PyArmor，不装 pywin32
+          python -m pip install pyinstaller pyarmor
 
-      - name: Patch runtime CWD (fix resources path)  # 将 CWD 固定到程序根目录
+      - name: Patch runtime CWD (fix resources path)
         shell: pwsh
         run: |
           $p = "pyscript/galaxytimer.py"
           if (-not (Test-Path $p)) { Write-Host "galaxytimer.py not found, skip patch"; exit 0 }
           $c = Get-Content $p -Raw -Encoding UTF8
 
-          if ($c -match "os\.chdir\(cur_path\)") {
+          if ($c -match 'os\.chdir\(cur_path\)') {
             Write-Host "CWD patch already exists. Skipping."
           } else {
-            # 将原来的 cur_path = os.getcwd() 替换为：基于 EXE 目录的 cur_path，并 chdir
-            $c = $c -replace 'cur_path\s*=\s*os\.getcwd\(\)',
-              'if getattr(sys, "frozen", False):' + "`r`n    cur_path = os.path.dirname(sys.executable)" + "`r`nelse:" + "`r`n    cur_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))" + "`r`nos.chdir(cur_path)'
-            Set-Content -Path $p -Value $c -Encoding UTF8
-            Write-Host "Patched galexytimer.py to set CWD to program dir."
+            $pattern = 'cur_path\s*=\s*os\.getcwd\(\)'
+            $replacement = @'
+if getattr(sys, "frozen", False):
+    cur_path = os.path.dirname(sys.executable)
+else:
+    cur_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(cur_path)
+'@
+            $new = [regex]::Replace($c, $pattern, $replacement)
+            Set-Content -Path $p -Value $new -Encoding UTF8
+            Write-Host "Patched galaxytimer.py to set CWD to program dir."
           }
 
-
+      # （可选）如需 PyArmor 混淆，可开启以下两行：
+      # - name: Obfuscate with PyArmor (optional)
+      #   run: pyarmor gen -O obf -r pyscript
 
       - name: Generate random salt for PyInstaller --key
         shell: pwsh
@@ -74,7 +82,8 @@ jobs:
 
           $args = @(
             "--noconfirm","--clean","-F","-w",
-            # 语音：SAPI5 & comtypes
+
+            # 语音：SAPI5 & comtypes（不携带 win32com）
             "--hidden-import","pyttsx3.drivers",
             "--hidden-import","pyttsx3.drivers.sapi5",
             "--hidden-import","comtypes",
@@ -102,7 +111,7 @@ jobs:
             $args += @("--icon",".\resources\icon\icon.ico")
           }
 
-          # 注意：不把 resources/ 打进包里（按你的要求）
+          # 不把 resources/ 打进包里（按你的要求）
           $args += $entry
 
           pyinstaller @args
