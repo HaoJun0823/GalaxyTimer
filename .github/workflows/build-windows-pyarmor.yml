@@ -82,7 +82,9 @@ jobs:
           $args = @(
             "--noconfirm","--clean","-F","-w",
 
-            # 显式添加 core 包
+            # === 使用源码里的 hooks，并把 core 包“全收” ===
+            "--additional-hooks-dir","hooks",
+            "--collect-all","core",
             "--collect-submodules","core",
             "--hidden-import","core.core_voice",
 
@@ -106,12 +108,12 @@ jobs:
             "--exclude-module","PySide6.QtWebEngineWidgets",
             "--exclude-module","PySide6.QtWebEngineQuick",
 
-            # 加盐（PyInstaller 5.x 可用）
-            "--key","$env:PYI_KEY",
-
-            # 明确搜索路径（可选，但更稳）
+            # 明确搜索路径（让顶层包可被绝对导入）
             "--paths",".",
-            "--paths","pyscript"
+            "--paths","pyscript",
+
+            # 加盐（PyInstaller 5.x 可用）
+            "--key","$env:PYI_KEY"
           )
 
           if (Test-Path ".\resources\icon\icon.ico") {
@@ -122,7 +124,6 @@ jobs:
           $args += $entry
 
           pyinstaller @args
-
 
       - name: UPX compress (optional)
         shell: pwsh
