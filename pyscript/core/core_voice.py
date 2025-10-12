@@ -1,126 +1,94 @@
-# Desc: 稳定的 TTS：单线程队列 + 线程内 COM 初始化，避免跨线程复用 pyttsx3 引擎
+# --*utf-8*--
+# 安全的语音播报：后台线程 + 队列，Speak() 不阻塞 & 不抛异常
+import threading, queue
 
-import threading
-import queue
-import pyttsx3
-
-from core.core_define import Path_Voice  # 如需读设置可保留
 try:
-    import pythoncom as _pycom
-    def _co_init():
-        _pycom.CoInitialize()
-    def _co_uninit():
-        try: _pycom.CoUninitialize()
-        except Exception: pass
-except Exception:
+    import pythoncom
+    import win32com.client as win32
+except Exception:  # 打包缺组件也不让外面崩
+    pythoncom = 无
+    win32 = 无
+
+# 全局队列与线程
+_speak_q: "queue.Queue[str|None]" = queue.Queue()
+_worker: threading.Thread | 无 = 无
+_default_rate: int = 0  # 语速：SAPI -10..10，0 为默认
+_default_volume: int = 100  # 音量 0..100
+
+def _worker_loop():
+    # 在工作线程里初始化 COM，避免阻塞/干扰主线程
+    if pythoncom:
+        try:
+            pythoncom.CoInitialize()
+        except Exception:
+            pass
+    voice = 无
     try:
-        import comtypes
-        def _co_init():
-            try: comtypes.CoInitialize()
-            except Exception: pass
-        def _co_uninit():
-            try: comtypes.CoUninitialize()
-            except Exception: pass
+        if win32:
+            try:
+                voice = win32.Dispatch("SAPI.SpVoice")
+                try:
+                    voice.Rate = _default_rate
+                except Exception:
+                    pass
+                try:
+                    voice.Volume = _default_volume
+                except Exception:
+                    pass
+            except Exception:
+                voice = 无
+
+        while True:
+            text = _speak_q.get()
+            if text is 无:
+                break
+            try:
+                if voice:
+                    # 同步播报，但在后台线程里，不阻塞调用方
+                    voice.Speak(str(text))
+            except Exception:
+                # 吃掉播报异常，避免影响热键/UI
+                pass
+    finally:
+        if pythoncom:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+
+def _ensure_worker():
+    global _worker
+    if _worker is None or not _worker.is_alive():
+        _worker = threading.Thread(target=_worker_loop, name="VoiceWorker", daemon=True)
+        _worker.start()
+
+def Speak(text: str):
+    """非阻塞：把文本丢到后台线程播放；任何异常都不会向外冒出。"""
+    try:
+        _ensure_worker()
+        _speak_q.put_nowait(str(text))
     except Exception:
-        def _co_init(): pass
-        def _co_uninit(): pass
+        pass  # 绝不影响调用方
 
+def SetRate(rate: int):
+    """设置语速（-10..10），对后续播报生效。"""
+    global _default_rate
+    try:
+        _default_rate = int(rate)
+    except Exception:
+        _default_rate = 0
 
-class Voice:
-    def __init__(self):
-        # 与旧接口兼容的字段
-        self.m_Switch = True
-        self.m_volume = 1.0
-        self.m_rate = 280
+def SetVolume(vol: int):
+    """设置音量（0..100），对后续播报生效。"""
+    global _default_volume
+    try:
+        _default_volume = max(0, min(100, int(vol)))
+    except Exception:
+        _default_volume = 100
 
-        # 内部状态
-        self._q = queue.Queue()
-        self._stop = threading.Event()
-        self._worker = None
-
-    # 供外部调用：初始化（可选）
-    def InitVoice(self, volume: float = None, rate: int = None):
-        if volume is not None: self.m_volume = float(volume)
-        if rate   is not None: self.m_rate   = int(rate)
-        self._ensure_worker()
-
-    # 供外部调用：说话
-    def Speak(self, text: str):
-        if not self.m_Switch or not text:
-            return
-        self._ensure_worker()
-        # 将文本与当前音量/语速一起入队，确保每条播报自带配置
-        self._q.put((str(text), float(self.m_volume), int(self.m_rate)))
-
-    # 供外部调用：停止/清队（不会销毁线程）
-    def Stop(self):
-        try:
-            while not self._q.empty():
-                self._q.get_nowait()
-        except Exception:
-            pass
-
-    # -------- 内部：工作线程 --------
-    def _ensure_worker(self):
-        if self._worker and self._worker.is_alive():
-            return
-        self._stop.clear()
-        t = threading.Thread(target=self._run, name="TTSWorker", daemon=True)
-        t.start()
-        self._worker = t
-
-    def _run(self):
-        _co_init()  # 关键：在线程内初始化 COM
-        try:
-            while not self._stop.is_set():
-                try:
-                    item = self._q.get(timeout=0.1)
-                except queue.Empty:
-                    continue
-                if item is None:
-                    continue
-                text, vol, rate = item
-
-                engine = None
-                try:
-                    # 明确使用 SAPI5；失败则退回默认
-                    try:
-                        engine = pyttsx3.init(driverName="sapi5")
-                    except Exception:
-                        engine = pyttsx3.init()
-
-                    try: engine.setProperty("volume", float(vol))
-                    except Exception: pass
-                    try: engine.setProperty("rate",   int(rate))
-                    except Exception: pass
-
-                    engine.say(text)
-                    engine.runAndWait()
-                except Exception as e:
-                    print("语音播报异常:", e)
-                finally:
-                    if engine is not None:
-                        try: engine.stop()
-                        except Exception: pass
-                        # 立刻丢弃 engine，避免跨事件复用引擎引发的状态机问题
-                        del engine
-        finally:
-            _co_uninit()
-
-    # 退出时清理
-    def __del__(self):
-        try:
-            self._stop.set()
-            self._q.put(None)
-            if self._worker and self._worker.is_alive():
-                self._worker.join(timeout=1.0)
-        except Exception:
-            pass
-
-
-# 单例导出（与原接口保持一致）
-if "g_Instance" not in globals():
-    g_Instance = Voice()
-
-Initialize = g_Instance.InitVoice
-Speak      = g_Instance.Speak
+def Shutdown():
+    """可选：程序退出时调用，优雅结束语音线程。"""
+    try:
+        _speak_q.put_nowait(None)
+    except Exception:
+        pass
