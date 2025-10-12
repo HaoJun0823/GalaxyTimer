@@ -75,6 +75,28 @@ jobs:
             Write-Host "Using generated random salt as key."
           }
           "PYI_KEY=$($env:PYI_KEY)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Preflight - normalize fullwidth comma in .py
+        shell: pwsh
+        run: |
+          $fixed = 0
+          Get-ChildItem -Recurse -Filter *.py | ForEach-Object {
+            $p = $_.FullName
+            $c = Get-Content -Raw -Encoding UTF8 $p
+            if ($c -match '，') {
+              $n = $c -replace '，'， ','
+              if ($n -ne $c) {
+                Set-Content -Encoding UTF8 -Path $p -Value $n
+                Write-Host "Fixed fullwidth comma in: $p"
+                $fixed++
+              }
+            }
+          }
+          Write-Host "Files normalized: $fixed"
+      - name: Preflight - py_compile all pyscript
+        shell: pwsh
+        run: |
+          python -c "import sys,compileall; sys.exit(0 if compileall.compile_dir('pyscript', force=True, quiet=1) else 1)"
+    
       - name: Locate Qt plugin folders via QLibraryInfo (with fallback)
         id: qtpaths
         shell: pwsh
