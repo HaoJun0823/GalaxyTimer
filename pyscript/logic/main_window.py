@@ -195,7 +195,21 @@ class MainWindow(QLabel):
     def register_reset_hotkey(self):
         # 全局重置
         data = core_save.LoadJson(Path_Setting)
-        self.m_GlobalReSetKey = core_input.RegisterHotKey(data.get(SettingName.TimerReset, ["F2"]), self.reset_timer)
+        keys = data.get(SettingName.TimerReset, ["F2"])
+        self.m_GlobalReSetKey = core_input.RegisterHotKey(keys, self.reset_timer)
+         # === 新增：Qt 快捷键兜底（当窗口有焦点时也能触发） ===
+    try:
+        from PySide6.QtGui import QKeySequence, QShortcut
+        # keys 可能是 ["ctrl", "alt", "r"] 这种列表，这里转成 "ctrl+alt+r"
+        ks = "+".join(keys) if isinstance(keys, list) else str(keys)
+        if hasattr(self, "_qt_reset_shortcut") and self._qt_reset_shortcut:
+            self._qt_reset_shortcut.setKey(QKeySequence(ks))
+        else:
+            self._qt_reset_shortcut = QShortcut(QKeySequence(ks), self)
+            self._qt_reset_shortcut.activated.connect(self.reset_timer)
+        print(f"[ResetHotkey] registered: {ks} (keyboard + Qt fallback)")
+    except Exception as e:
+        print("Qt shortcut fallback failed:", e)
 
     def reset_timer(self):
         for timer in self.m_AllTimer.values():
