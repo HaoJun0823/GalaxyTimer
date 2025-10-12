@@ -219,11 +219,11 @@ class Voice:
                 except Exception as e:
                     print("TTS run error:", e)
                     try:
-                        if engine is not 无:
+                        if engine is not None:
                             engine.stop()
                     except Exception:
                         pass
-                    engine = 无  # 下次重建
+                    engine = None  # 下次重建
 
         finally:
             try:
@@ -238,7 +238,7 @@ class Voice:
             self._stop.set()
             self._q.put(None)
             if self._worker and self._worker.is_alive():
-                self._worker。join(timeout=1.0)
+                self._worker.join(timeout=1.0)
         except Exception:
             pass
 
