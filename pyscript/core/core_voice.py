@@ -1,147 +1,58 @@
-# --*utf-8*--
-# Author: 一念断星河（修订：单线程复用引擎 + 线程内 COM + 打包兜底）
-import threading, queue, ctypes
+# Desc: 稳定的 TTS：单线程队列 + 线程内 COM 初始化，避免跨线程复用 pyttsx3 引擎
+
+import threading
+import queue
 import pyttsx3
 
-# --- 确保 PyInstaller 收到 SAPI 驱动 ---
+from core.core_define import Path_Voice  # 如需读设置可保留
 try:
-    import pyttsx3.drivers  # noqa
-    import pyttsx3.drivers.sapi5  # noqa
+    import pythoncom as _pycom
+    def _co_init():
+        _pycom.CoInitialize()
+    def _co_uninit():
+        try: _pycom.CoUninitialize()
+        except Exception: pass
 except Exception:
-    pass
-
-# --- COM 初始化：pythoncom -> comtypes -> ctypes/ole32 ---
-def _co_init():
-    # COINIT_APARTMENTTHREADED = 0x2
-    COINIT_APARTMENTTHREADED = 0x2
     try:
-        import pythoncom
-        pythoncom.CoInitialize()
-        return ("pythoncom", None)
+        import comtypes
+        def _co_init():
+            try: comtypes.CoInitialize()
+            except Exception: pass
+        def _co_uninit():
+            try: comtypes.CoUninitialize()
+            except Exception: pass
     except Exception:
-        try:
-            import comtypes
-            try:
-                comtypes.CoInitialize()
-            except Exception:
-                # 有些版本暴露的是 CoInitializeEx
-                from comtypes import CoInitializeEx  # type: ignore
-                CoInitializeEx(0, COINIT_APARTMENTTHREADED)
-            return ("comtypes", None)
-        except Exception:
-            try:
-                ole32 = ctypes.OleDLL("ole32")
-                ole32.CoInitializeEx(None, COINIT_APARTMENTTHREADED)
-                return ("ctypes", ole32)
-            except Exception as e:
-                print("TTS COM init failed:", e)
-                return (None, None)
-
-def _co_uninit(tag_ole32):
-    tag, ole32 = tag_ole32
-    try:
-        if tag == "pythoncom":
-            import pythoncom
-            pythoncom.CoUninitialize()
-        elif tag == "comtypes":
-            import comtypes
-            try:
-                comtypes.CoUninitialize()
-            except Exception:
-                pass
-        elif tag == "ctypes" and ole32 is not None:
-            try:
-                ole32.CoUninitialize()
-            except Exception:
-                pass
-    except Exception:
-        pass
+        def _co_init(): pass
+        def _co_uninit(): pass
 
 
 class Voice:
     def __init__(self):
-        # 可被 UI 修改的状态
-        self._lock = threading.RLock()
+        # 与旧接口兼容的字段
         self.m_Switch = True
-        self.m_volume = 1.0   # 0.0~1.0 或 0~100（自动识别）
-        self.m_rate   = 230   # 接受 wpm 或 0~100 百分比
+        self.m_volume = 1.0
+        self.m_rate = 240
 
-        # 运行态
+        # 内部状态
         self._q = queue.Queue()
         self._stop = threading.Event()
         self._worker = None
 
-        # 存档（可选）
-        try:
-            from core import core_save
-            from core.core_define import Path_Voice
-            self._core_save = core_save
-            self._path_voice = Path_Voice
-        except Exception:
-            self._core_save = None
-            self._path_voice = None
-
-    # -------- 外部接口 --------
-    def InitVoice(self, volume=None, rate=None):
-        # 读取历史配置（与原版兼容）
-        try:
-            if self._core_save and self._path_voice:
-                cfg = self._core_save.LoadJson(self._path_voice) or {}
-                if volume is None:
-                    volume = cfg.get("volume", None)
-                if rate is None:
-                    rate = cfg.get("rate", None)
-                sw = cfg.get("switch", None)
-                if sw is not None:
-                    self.Switch(bool(sw))
-        except Exception:
-            pass
-
-        with self._lock:
-            if volume is not None:
-                self._set_volume_nolock(volume)
-            if rate is not None:
-                self._set_rate_nolock(int(rate))
+    # 供外部调用：初始化（可选）
+    def InitVoice(self, volume: float = None, rate: int = None):
+        if volume is not None: self.m_volume = float(volume)
+        if rate   is not None: self.m_rate   = int(rate)
         self._ensure_worker()
 
+    # 供外部调用：说话
     def Speak(self, text: str):
-        if not text or not self.m_Switch:
+        if not self.m_Switch or not text:
             return
         self._ensure_worker()
-        self._q.put(str(text))
+        # 将文本与当前音量/语速一起入队，确保每条播报自带配置
+        self._q.put((str(text), float(self.m_volume), int(self.m_rate)))
 
-    def Switch(self, bSwitch: bool):
-        with self._lock:
-            self.m_Switch = bool(bSwitch)
-        self.Save()
-
-    def SetVolume(self, vol):
-        with self._lock:
-            self._set_volume_nolock(vol)
-        self.Save()
-
-    def SetRate(self, rate_wpm_or_pct: int):
-        with self._lock:
-            self._set_rate_nolock(int(rate_wpm_or_pct))
-        self.Save()
-
-    def SetRatePercent(self, pct: int):
-        with self._lock:
-            self.m_rate = max(0, min(100, int(pct)))
-        self.Save()
-
-    def Save(self):
-        if not (self._core_save and self._path_voice):
-            return
-        try:
-            self._core_save.SaveJson(self._path_voice, {
-                "rate":   int(self.m_rate),
-                "volume": float(self.m_volume),
-                "switch": bool(self.m_Switch),
-            })
-        except Exception:
-            pass
-
+    # 供外部调用：停止/清队（不会销毁线程）
     def Stop(self):
         try:
             while not self._q.empty():
@@ -149,28 +60,7 @@ class Voice:
         except Exception:
             pass
 
-    # -------- 内部：归一化/映射 --------
-    def _set_rate_nolock(self, v: int):
-        self.m_rate = v  # 可是 0~100 或 wpm
-
-    def _set_volume_nolock(self, v):
-        try:
-            v = float(v)
-            if v > 1.0:  # 支持 0~100
-                v = v / 100.0
-        except Exception:
-            v = 1.0
-        self.m_volume = max(0.0, min(1.0, v))
-
-    def _map_rate_to_wpm(self, v: int) -> int:
-        # [-10..10] 相对；[0..100] 百分比；否则视作 wpm
-        if -10 <= v <= 10:
-            return 220 + v * 12
-        if 0 <= v <= 100:
-            return int(80 + (v / 100.0) * 300)  # 80~380
-        return max(80, min(450, int(v)))
-
-    # -------- 工作线程 --------
+    # -------- 内部：工作线程 --------
     def _ensure_worker(self):
         if self._worker and self._worker.is_alive():
             return
@@ -180,59 +70,44 @@ class Voice:
         self._worker = t
 
     def _run(self):
-        tag = _co_init()
-        engine = None
-
-        def _ensure_engine():
-            nonlocal engine
-            if engine is None:
-                # 先 sapi5，失败退回默认
-                try:
-                    engine = pyttsx3.init(driverName="sapi5")
-                except Exception:
-                    engine = pyttsx3.init()
-
+        _co_init()  # 关键：在线程内初始化 COM
         try:
             while not self._stop.is_set():
                 try:
-                    text = self._q.get(timeout=0.2)
+                    item = self._q.get(timeout=0.1)
                 except queue.Empty:
                     continue
-                if not text:
+                if item is None:
                     continue
+                text, vol, rate = item
 
+                engine = None
                 try:
-                    _ensure_engine()
-                    # 每次播报前应用“当前”设置
-                    with self._lock:
-                        vol = float(self.m_volume)
-                        rate_wpm = self._map_rate_to_wpm(int(self.m_rate))
+                    # 明确使用 SAPI5；失败则退回默认
+                    try:
+                        engine = pyttsx3.init(driverName="sapi5")
+                    except Exception:
+                        engine = pyttsx3.init()
 
-                    try: engine.setProperty("volume", vol)
+                    try: engine.setProperty("volume", float(vol))
                     except Exception: pass
-                    try: engine.setProperty("rate", rate_wpm)
+                    try: engine.setProperty("rate",   int(rate))
                     except Exception: pass
 
                     engine.say(text)
                     engine.runAndWait()
-
                 except Exception as e:
-                    print("TTS run error:", e)
-                    try:
-                        if engine is not None:
-                            engine.stop()
-                    except Exception:
-                        pass
-                    engine = None  # 下次重建
-
+                    print("语音播报异常:", e)
+                finally:
+                    if engine is not None:
+                        try: engine.stop()
+                        except Exception: pass
+                        # 立刻丢弃 engine，避免跨事件复用引擎引发的状态机问题
+                        del engine
         finally:
-            try:
-                if engine is not 无:
-                    engine.stop()
-            except Exception:
-                pass
-            _co_uninit(tag)
+            _co_uninit()
 
+    # 退出时清理
     def __del__(self):
         try:
             self._stop.set()
@@ -243,12 +118,9 @@ class Voice:
             pass
 
 
-# 单例 & 兼容旧接口
+# 单例导出（与原接口保持一致）
 if "g_Instance" not in globals():
     g_Instance = Voice()
 
-Initialize       = g_Instance.InitVoice
-Speak            = g_Instance.Speak
-SetRate          = g_Instance.SetRate
-SetRatePercent   = g_Instance.SetRatePercent
-SetVolume        = g_Instance.SetVolume
+Initialize = g_Instance.InitVoice
+Speak      = g_Instance.Speak
