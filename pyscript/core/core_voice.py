@@ -31,7 +31,7 @@ class Voice:
         # 与旧接口兼容的字段
         self.m_Switch = True
         self.m_volume = 1.0
-        self.m_rate = 240
+        self.m_rate = 280
 
         # 内部状态
         self._q = queue.Queue()
