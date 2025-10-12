@@ -235,7 +235,7 @@ class Voice:
 
     def __del__(self):
         try:
-            self._stop。set()
+            self._stop.set()
             self._q.put(None)
             if self._worker and self._worker.is_alive():
                 self._worker。join(timeout=1.0)
