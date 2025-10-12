@@ -83,7 +83,7 @@ jobs:
             $p = $_.FullName
             $c = Get-Content -Raw -Encoding UTF8 $p
             if ($c -match '，') {
-              $n = $c -replace '，'， ','
+              $n = $c -replace '，', ','
               if ($n -ne $c) {
                 Set-Content -Encoding UTF8 -Path $p -Value $n
                 Write-Host "Fixed fullwidth comma in: $p"
